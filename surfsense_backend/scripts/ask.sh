@@ -407,30 +407,64 @@ remove_folder() {
 # These use _raw rather than api() because a bad token is a normal outcome in a
 # REPL — api() calls die() on non-2xx, which would kill the session.
 
+# soft_api always prints the response body and returns 0 on 2xx, 1 otherwise.
+# It must print the body on failure too: callers run it in a command
+# substitution, so the HTTP_CODE/BODY globals it sets are lost with the subshell
+# and the caller can only see what was written to stdout.
 soft_api() {
 	_raw "$@" || { warn "network error on $1 $2 (is $SS up?)"; return 1; }
 	if { [ "$HTTP_CODE" = 401 ] || [ "$HTTP_CODE" = 403 ]; } && [ "$RELOGGED" = 0 ]; then
 		RELOGGED=1; login
 		_raw "$@" || { warn "network error on $1 $2"; return 1; }
 	fi
+	printf '%s' "$BODY"
 	case "$HTTP_CODE" in
-		2*) printf '%s' "$BODY"; return 0 ;;
+		2*) return 0 ;;
 		*)  return 1 ;;
 	esac
 }
 
+# Pull FastAPI's {"detail": ...} out of an error body, falling back to the raw
+# body when it isn't JSON (a 500 HTML page, an empty response).
+api_error() { printf '%s' "$1" | jq -r '.detail // .' 2>/dev/null || printf '%s' "$1"; }
+
+# /share names a folder in the *knowledge base*, not on disk. But /add takes a
+# local path, so a local path is exactly what people type here — accept it and
+# map it to the KB label the way /rm already does.
+kb_path() {
+	local raw=$1
+	raw=${raw%/}
+	case "$raw" in
+		/*|./*|../*|~*) printf '%s' "${raw##*/}" ;;
+		*)              printf '%s' "$raw" ;;
+	esac
+}
+
 share_folder() {
-	local path=$1 resp token
+	local given=$1 path resp token
+	path=$(kb_path "$given")
+	[ "$path" = "$given" ] || info "sharing KB folder '$path' (from local path '$given')"
+
 	resp=$(soft_api POST "/api/v1/search-spaces/$SPACE_ID/folder-shares" \
 		-H 'Content-Type: application/json' \
 		-d "$(jq -nc --arg p "$path" '{path: $p}')") || {
-		warn "could not share '$path': $(printf '%s' "$BODY" | jq -r '.detail // .' 2>/dev/null)"
+		warn "could not share '$path': $(api_error "$resp")"
+		warn "note: /share takes a knowledge-base folder, not a disk path — see /folders"
 		return 1
 	}
 	token=$(printf '%s' "$resp" | jq -r '.token')
 	printf '\n  Share token for \033[1m%s\033[0m:\n\n    %s\n\n' "$path" "$token"
 	printf '  The recipient runs:  /import %s\n' "$token" >&2
-	printf '  Revoke any time:     DELETE /api/v1/folder-shares/%s\n\n' "$token" >&2
+	printf '  Revoke any time:     /unshare %s\n\n' "$token" >&2
+}
+
+unshare_folder() {
+	local token=$1 resp
+	resp=$(soft_api DELETE "/api/v1/folder-shares/$token") || {
+		warn "could not revoke: $(api_error "$resp")"
+		return 1
+	}
+	info "revoked — importers lose access on their next query"
 }
 
 import_folder() {
@@ -438,7 +472,7 @@ import_folder() {
 	resp=$(soft_api POST "/api/v1/search-spaces/$SPACE_ID/folder-links" \
 		-H 'Content-Type: application/json' \
 		-d "$(jq -nc --arg t "$token" '{token: $t}')") || {
-		warn "could not import: $(printf '%s' "$BODY" | jq -r '.detail // .' 2>/dev/null)"
+		warn "could not import: $(api_error "$resp")"
 		return 1
 	}
 	name=$(printf '%s' "$resp" | jq -r '.folder_name')
@@ -543,8 +577,12 @@ help_text() {
   /reextract <path> [label]  wipe and rebuild a folder's documents
   /rm <label|path>           remove a folder and all its documents
   /folders                   list this user's ingested folders
-  /share <folder-path>       mint a token granting read access to that folder
-                             subtree; hand it to another user
+  /share <kb-folder>         mint a token granting read access to that folder
+                             subtree; hand it to another user. Names a KB folder
+                             (a label from /folders, e.g. 1_10 or 1_10/sub), not
+                             a disk path — though a disk path is accepted and
+                             mapped to its basename.
+  /unshare <token>           revoke a share; importers lose access next query
   /import <token>            redeem a token: the folder becomes searchable here
                              and readable (read-only) at /documents/_shared/<name>
   /session           show space / thread / model
@@ -590,7 +628,8 @@ while :; do
 		/add)        if [ -n "$arg" ]; then ingest "${arg%% *}" 0 "$(printf '%s' "$arg" | cut -s -d' ' -f2-)"; else warn "usage: /add <path> [label]"; fi ;;
 		/reextract)  if [ -n "$arg" ]; then ingest "${arg%% *}" 1 "$(printf '%s' "$arg" | cut -s -d' ' -f2-)"; else warn "usage: /reextract <path> [label]"; fi ;;
 		/rm)         if [ -n "$arg" ]; then remove_folder "$arg"; else warn "usage: /rm <label|path>"; fi ;;
-		/share)      if [ -n "$arg" ]; then share_folder "$arg"; else warn "usage: /share <folder-path>  (e.g. /share Research/AI)"; fi ;;
+		/share)      if [ -n "$arg" ]; then share_folder "$arg"; else warn "usage: /share <kb-folder>  (a label from /folders, e.g. /share 1_10)"; fi ;;
+		/unshare)    if [ -n "$arg" ]; then unshare_folder "$arg"; else warn "usage: /unshare <token>"; fi ;;
 		/import)     if [ -n "$arg" ]; then import_folder "$arg"; else warn "usage: /import <token>"; fi ;;
 		/*)          warn "unknown command: $cmd (try /help)" ;;
 		*)           ask "$line" ;;
