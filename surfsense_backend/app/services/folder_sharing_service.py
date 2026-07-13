@@ -98,6 +98,41 @@ async def user_can_read_via_link(
     return result.first() is not None
 
 
+async def live_link_fingerprint(
+    session: AsyncSession, search_space_id: int
+) -> tuple[int, int]:
+    """Cheap value that changes whenever this space's live link set changes.
+
+    Cache keys over the workspace tree must include this. Links are created and
+    revoked through REST (``/import``, ``/unshare``), which never bumps
+    ``tree_version`` — that only advances when the *agent* mutates documents. A
+    cache keyed on ``tree_version`` alone would keep serving a tree rendered
+    before the import, and because the tree cache lives on a long-lived
+    middleware instance, it would do so in later conversations too.
+
+    ``(count, max_id)`` moves on import (both) and on revoke or expiry (count
+    drops, since liveness is part of the query).
+    """
+    result = await session.execute(
+        select(
+            func.count(FolderLink.id),
+            func.coalesce(func.max(FolderLink.id), 0),
+        )
+        .select_from(FolderLink)
+        .join(SharedFolder, SharedFolder.id == FolderLink.share_id)
+        .where(
+            FolderLink.target_search_space_id == search_space_id,
+            SharedFolder.revoked_at.is_(None),
+            or_(
+                SharedFolder.expires_at.is_(None),
+                SharedFolder.expires_at > func.now(),
+            ),
+        )
+    )
+    row = result.one()
+    return (int(row[0]), int(row[1]))
+
+
 async def get_linked_folder_roots(
     session: AsyncSession, search_space_id: int
 ) -> list[Folder]:

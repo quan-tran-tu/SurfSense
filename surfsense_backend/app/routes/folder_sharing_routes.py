@@ -168,9 +168,15 @@ async def create_folder_link(
     if not folder:
         raise HTTPException(status_code=404, detail="Shared folder no longer exists")
 
+    # Read every attribute we still need *before* committing. commit() expires
+    # these instances, and a later attribute access would then issue a lazy
+    # refresh — sync IO on an async session, which raises MissingGreenlet.
+    folder_name = folder.name
+    source_folder_id = share.source_folder_id
+
     link = FolderLink(
         share_id=share.id,
-        source_folder_id=share.source_folder_id,
+        source_folder_id=source_folder_id,
         target_search_space_id=search_space_id,
         created_by_id=auth.user.id,
     )
@@ -186,13 +192,13 @@ async def create_folder_link(
         existing = await session.execute(
             select(FolderLink).filter(
                 FolderLink.target_search_space_id == search_space_id,
-                FolderLink.source_folder_id == share.source_folder_id,
+                FolderLink.source_folder_id == source_folder_id,
             )
         )
         link = existing.scalars().first()
         if not link:
             raise
-        return _link_read(link, folder.name)
+        return _link_read(link, folder_name)
 
     await session.refresh(link)
-    return _link_read(link, folder.name)
+    return _link_read(link, folder_name)

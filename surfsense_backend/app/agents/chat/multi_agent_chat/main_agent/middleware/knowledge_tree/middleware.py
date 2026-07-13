@@ -44,6 +44,7 @@ from app.agents.chat.runtime.path_resolver import (
     doc_to_virtual_path,
     readable_documents_filter,
 )
+from app.services.folder_sharing_service import live_link_fingerprint
 from app.db import Document, shielded_async_session
 from app.utils.perf import get_perf_logger
 
@@ -120,7 +121,9 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         self.max_entries = max_entries
         self.max_tokens = max_tokens
         self.inject_system_message = inject_system_message
-        self._cache: dict[tuple[int, int, bool], str] = {}
+        # (search_space_id, tree_version, live_link_fingerprint) -> rendered tree
+        self._cache: dict[tuple[int, int, tuple[int, int]], str] = {}
+        self._last_cache_outcome = "miss"
 
     async def abefore_agent(  # type: ignore[override]
         self,
@@ -141,10 +144,10 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
             tree_msg = self._render_anon_tree(anon_doc)
             cache_outcome = "anon"
         else:
-            version = int(state.get("tree_version") or 0)
-            cache_key = (self.search_space_id, version, False)
-            cache_outcome = "hit" if cache_key in self._cache else "miss"
+            # _render_kb_tree owns the key (it needs a session to build it) and
+            # reports what it did.
             tree_msg = await self._render_kb_tree(state)
+            cache_outcome = self._last_cache_outcome
 
         update["workspace_tree_text"] = tree_msg
 
@@ -191,13 +194,21 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
 
     async def _render_kb_tree(self, state: AgentState) -> str:
         version = int(state.get("tree_version") or 0)
-        cache_key = (self.search_space_id, version, False)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
 
         try:
             async with shielded_async_session() as session:
+                # The fingerprint has to be part of the key: /import and /unshare
+                # change what this space can see without bumping tree_version,
+                # which only advances when the agent mutates documents.
+                fingerprint = await live_link_fingerprint(
+                    session, self.search_space_id
+                )
+                cache_key = (self.search_space_id, version, fingerprint)
+                cached = self._cache.get(cache_key)
+                self._last_cache_outcome = "hit" if cached is not None else "miss"
+                if cached is not None:
+                    return cached
+
                 index = await build_path_index(session, self.search_space_id)
                 doc_rows = await session.execute(
                     select(Document.id, Document.title, Document.folder_id).where(
@@ -207,6 +218,7 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
                 docs = list(doc_rows.all())
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("knowledge_tree: DB error %s", exc)
+            self._last_cache_outcome = "error"
             return "<workspace_tree>\n(unavailable)\n</workspace_tree>"
 
         rendered = self._format_tree(index, docs)
