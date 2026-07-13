@@ -2158,6 +2158,96 @@ class SearchSpaceInvite(BaseModel, TimestampMixin):
     )
 
 
+class SharedFolder(BaseModel, TimestampMixin):
+    """
+    A grant: "this folder subtree may be linked into another search space".
+
+    Minted by ``POST /search-spaces/{id}/folder-shares``. The token is the whole
+    payload — sharing only works within one deployment, because both sides read
+    the same ``documents`` rows. Liveness (revoked / expired / exhausted) is
+    checked on every read, so revocation takes effect on the next query rather
+    than whenever a sweep happens to run.
+    """
+
+    __tablename__ = "shared_folders"
+
+    token = Column(String(64), nullable=False, unique=True, index=True)
+
+    source_folder_id = Column(
+        Integer,
+        ForeignKey("folders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_search_space_id = Column(
+        Integer,
+        ForeignKey("searchspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    max_uses = Column(Integer, nullable=True)
+    uses_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    revoked_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    name = Column(String(100), nullable=True)
+
+    source_folder = relationship("Folder")
+    links = relationship("FolderLink", back_populates="share", passive_deletes=True)
+
+
+class FolderLink(BaseModel, TimestampMixin):
+    """
+    An acceptance: search space X reads through to the folder subtree named by a
+    share. No documents are copied; ``source_folder_id`` is denormalized off the
+    share so read predicates can filter without joining, but liveness still
+    consults ``shared_folders`` on every query.
+    """
+
+    __tablename__ = "folder_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "target_search_space_id",
+            "source_folder_id",
+            name="uq_folder_link_target_source",
+        ),
+    )
+
+    share_id = Column(
+        Integer,
+        ForeignKey("shared_folders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_folder_id = Column(
+        Integer,
+        ForeignKey("folders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_search_space_id = Column(
+        Integer,
+        ForeignKey("searchspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    share = relationship("SharedFolder", back_populates="links")
+    source_folder = relationship("Folder")
+
+
 class PromptMode(StrEnum):
     transform = "transform"
     explore = "explore"

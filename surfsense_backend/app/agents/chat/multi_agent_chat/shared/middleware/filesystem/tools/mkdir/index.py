@@ -14,7 +14,7 @@ from langgraph.types import Command
 from app.agents.chat.multi_agent_chat.shared.state.filesystem_state import (
     SurfSenseFilesystemState,
 )
-from app.agents.chat.runtime.path_resolver import DOCUMENTS_ROOT
+from app.agents.chat.runtime.path_resolver import DOCUMENTS_ROOT, is_shared_path
 
 from ...middleware.async_dispatch import run_async_blocking
 from ...middleware.mode import is_cloud
@@ -46,6 +46,11 @@ def create_mkdir_tool(mw: SurfSenseFilesystemMiddleware) -> BaseTool:
                 return (
                     "Error: cloud mkdir must target a path under /documents/ "
                     f"(got '{validated}')."
+                )
+            if is_shared_path(validated):
+                return (
+                    f"Error: '{validated}' is inside a folder shared with you by "
+                    "another workspace and is read-only."
                 )
             return Command(
                 update={

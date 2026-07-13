@@ -20,7 +20,7 @@ from app.agents.chat.multi_agent_chat.shared.state.filesystem_state import (
     SurfSenseFilesystemState,
 )
 from app.agents.chat.multi_agent_chat.shared.state.reducers import _CLEAR
-from app.agents.chat.runtime.path_resolver import DOCUMENTS_ROOT
+from app.agents.chat.runtime.path_resolver import DOCUMENTS_ROOT, is_shared_path
 
 from ...middleware.path_resolution import current_cwd
 from ...shared.paths import is_ancestor_of
@@ -41,6 +41,14 @@ async def cloud_rmdir(
         return (
             "Error: cloud rmdir must target a path under /documents/ "
             f"(got '{validated}')."
+        )
+    if is_shared_path(validated):
+        # The commit path refuses this too; failing here gives the agent a
+        # legible error instead of a silently dropped operation.
+        return (
+            f"Error: '{validated}' is a folder shared with you by another "
+            "workspace and is read-only. Use /import and /share to manage it; "
+            "it cannot be deleted from here."
         )
 
     cwd = current_cwd(mw, runtime)

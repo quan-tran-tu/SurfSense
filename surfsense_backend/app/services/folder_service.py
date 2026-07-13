@@ -194,6 +194,47 @@ async def ensure_folder_hierarchy_with_depth_validation(
     return current_folder
 
 
+async def resolve_folder_path(
+    session: AsyncSession,
+    search_space_id: int,
+    path: str,
+) -> Folder:
+    """Resolve a slash-separated folder path (``"Research/AI"``) to its Folder.
+
+    Read-only counterpart to :func:`ensure_folder_hierarchy_with_depth_validation`,
+    which walks the same name segments but *creates* missing ones — unusable when
+    the caller is naming an existing folder rather than declaring one.
+
+    Raises HTTPException(404) if any segment is missing.
+    """
+    segments = [seg for seg in path.strip("/").split("/") if seg]
+    if not segments:
+        raise HTTPException(status_code=400, detail="Folder path must not be empty")
+
+    parent_id: int | None = None
+    folder: Folder | None = None
+
+    for name in segments:
+        stmt = select(Folder).where(
+            Folder.search_space_id == search_space_id,
+            Folder.name == name,
+            Folder.parent_id == parent_id
+            if parent_id is not None
+            else Folder.parent_id.is_(None),
+        )
+        result = await session.execute(stmt)
+        folder = result.scalar_one_or_none()
+
+        if folder is None:
+            raise HTTPException(
+                status_code=404, detail=f"Folder not found at path: {path}"
+            )
+        parent_id = folder.id
+
+    assert folder is not None
+    return folder
+
+
 async def get_folder_subtree_ids(session: AsyncSession, folder_id: int) -> list[int]:
     """Return all folder IDs in the subtree rooted at folder_id (inclusive)."""
     result = await session.execute(

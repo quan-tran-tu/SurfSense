@@ -17,10 +17,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Document, DocumentType, Folder
+from app.services.folder_sharing_service import (
+    SHARED_PREFIX,
+    get_linked_folder_roots,
+)
 from app.utils.document_converters import generate_unique_identifier_hash
 
 DOCUMENTS_ROOT = "/documents"
@@ -95,12 +99,61 @@ class PathIndex:
     occupants: dict[str, int] = field(default_factory=dict)
     """virtual path -> ``Document.id`` already occupying that path (this render)."""
 
+    linked_folder_ids: set[int] = field(default_factory=set)
+    """Folders readable only via a share link. **Read-only** — see WS3 write guard.
+
+    These live under ``/documents/_shared/`` and belong to *another* search space;
+    their rows must never be mutated through this space. Carried on the index so
+    callers that already built one can widen their document filters, and so the
+    write guard can test membership, without re-querying.
+    """
+
+
+SHARED_ROOT = f"{DOCUMENTS_ROOT}/{SHARED_PREFIX}"
+"""Virtual mount for folders reachable through a share link. Read-only."""
+
+
+def is_shared_path(path: str) -> bool:
+    """True for any path inside the read-only linked-folder mount.
+
+    Linked folders are reachable *only* under this prefix (see
+    :func:`_add_linked_folder_paths`), so a prefix test is a complete cheap
+    filter for "would this write touch another space's rows?". It is not the
+    whole guard — the commit path also re-checks the resolved row's owning
+    search space, because ownership, not the name used to reach a row, is what
+    actually decides.
+    """
+    return path == SHARED_ROOT or path.startswith(SHARED_ROOT + "/")
+
+
+def readable_documents_filter(index: PathIndex, search_space_id: int):
+    """SQL predicate for "documents this space may read".
+
+    Owned documents, plus those sitting in a folder reachable through a live
+    share link. Every read surface that renders paths from a :class:`PathIndex`
+    must use this instead of a bare ``search_space_id ==`` — otherwise linked
+    folders appear in the tree but their documents do not, and the agent sees
+    empty directories it cannot explain.
+    """
+    if not index.linked_folder_ids:
+        return Document.search_space_id == search_space_id
+    return or_(
+        Document.search_space_id == search_space_id,
+        Document.folder_id.in_(index.linked_folder_ids),
+    )
+
 
 async def _build_folder_paths(
     session: AsyncSession,
     search_space_id: int,
-) -> dict[int, str]:
-    """Compute ``Folder.id`` -> absolute virtual path under ``/documents``."""
+) -> tuple[dict[int, str], set[int]]:
+    """Compute ``Folder.id`` -> absolute virtual path under ``/documents``.
+
+    Returns the path map and the set of linked (read-only, foreign) folder ids.
+    Owned folders are rooted at ``/documents``; folders reachable through a live
+    share link are rooted at ``/documents/_shared/<root name>`` so they read as
+    visibly foreign and so the write guard has a cheap path-prefix test.
+    """
     result = await session.execute(
         select(Folder.id, Folder.name, Folder.parent_id).where(
             Folder.search_space_id == search_space_id
@@ -128,7 +181,62 @@ async def _build_folder_paths(
 
     for folder_id in by_id:
         resolve(folder_id)
-    return cache
+
+    linked_ids = await _add_linked_folder_paths(session, search_space_id, cache)
+    return cache, linked_ids
+
+
+async def _add_linked_folder_paths(
+    session: AsyncSession,
+    search_space_id: int,
+    cache: dict[int, str],
+) -> set[int]:
+    """Mount each live-linked folder subtree under ``/documents/_shared/``.
+
+    Mutates ``cache`` in place; returns the ids mounted. A linked root's own
+    children are walked from the sharer's tree, so ``Research/AI`` under a share
+    of ``Research`` lands at ``/documents/_shared/Research/AI``.
+    """
+    roots = await get_linked_folder_roots(session, search_space_id)
+    if not roots:
+        return set()
+
+    shared_root = f"{DOCUMENTS_ROOT}/{SHARED_PREFIX}"
+    linked_ids: set[int] = set()
+
+    # Two links can name folders with the same display name from different spaces;
+    # disambiguate the second by id rather than letting one shadow the other.
+    used_names: set[str] = set()
+    frontier: list[tuple[int, str]] = []
+    for root in roots:
+        segment = safe_folder_segment(str(root.name))
+        if segment in used_names:
+            segment = f"{segment} ({root.id})"
+        used_names.add(segment)
+        path = f"{shared_root}/{segment}"
+        cache[root.id] = path
+        linked_ids.add(root.id)
+        frontier.append((root.id, path))
+
+    # Breadth-first over the sharer's descendants.
+    while frontier:
+        parent_ids = [fid for fid, _ in frontier]
+        parent_paths = dict(frontier)
+        child_rows = await session.execute(
+            select(Folder.id, Folder.name, Folder.parent_id).where(
+                Folder.parent_id.in_(parent_ids)
+            )
+        )
+        frontier = []
+        for row in child_rows.all():
+            if row.id in linked_ids:  # cycle guard; folders are a tree, but cheap
+                continue
+            path = f"{parent_paths[row.parent_id]}/{safe_folder_segment(str(row.name))}"
+            cache[row.id] = path
+            linked_ids.add(row.id)
+            frontier.append((row.id, path))
+
+    return linked_ids
 
 
 async def build_path_index(
@@ -144,13 +252,21 @@ async def build_path_index(
     :func:`doc_to_virtual_path` can detect collisions across the whole space;
     the persistence middleware sets this to ``False`` when it is iterating to
     decide where to place fresh documents.
+
+    The index spans owned documents *and* those reachable through a live share
+    link; the latter are read-only and flagged by ``linked_folder_ids``.
     """
-    folder_paths = await _build_folder_paths(session, search_space_id)
+    folder_paths, linked_folder_ids = await _build_folder_paths(session, search_space_id)
     occupants: dict[str, int] = {}
     if populate_occupants:
         rows = await session.execute(
             select(Document.id, Document.title, Document.folder_id).where(
-                Document.search_space_id == search_space_id,
+                or_(
+                    Document.search_space_id == search_space_id,
+                    Document.folder_id.in_(linked_folder_ids)
+                    if linked_folder_ids
+                    else false(),
+                )
             )
         )
         for row in rows.all():
@@ -160,7 +276,11 @@ async def build_path_index(
             if path in occupants and occupants[path] != row.id:
                 path = f"{base}/{_suffix_with_doc_id(filename, row.id)}"
             occupants[path] = row.id
-    return PathIndex(folder_paths=folder_paths, occupants=occupants)
+    return PathIndex(
+        folder_paths=folder_paths,
+        occupants=occupants,
+        linked_folder_ids=linked_folder_ids,
+    )
 
 
 def doc_to_virtual_path(
@@ -203,6 +323,24 @@ async def virtual_path_to_doc(
     """
     if not virtual_path or not virtual_path.startswith(DOCUMENTS_ROOT):
         return None
+
+    # Linked documents belong to the sharer's space, so every lookup below —
+    # the unique_identifier_hash (which mixes in search_space_id), the id lookup,
+    # the folder walk — is constrained to the wrong space and would miss them.
+    # Resolve them through the index that minted the path in the first place.
+    if virtual_path.startswith(f"{DOCUMENTS_ROOT}/{SHARED_PREFIX}/"):
+        index = await build_path_index(session, search_space_id)
+        doc_id = index.occupants.get(virtual_path)
+        if doc_id is None:
+            return None
+        result = await session.execute(select(Document).where(Document.id == doc_id))
+        document = result.scalar_one_or_none()
+        # An id lookup unconstrained by search space is exactly the sort of thing
+        # that must fail closed: re-verify the row really does sit in a folder
+        # this space holds a live link to.
+        if document is None or document.folder_id not in index.linked_folder_ids:
+            return None
+        return document
 
     unique_hash = generate_unique_identifier_hash(
         DocumentType.NOTE,
@@ -343,7 +481,10 @@ __all__ = [
     "build_path_index",
     "doc_to_virtual_path",
     "parse_doc_id_suffix",
+    "SHARED_ROOT",
+    "is_shared_path",
     "parse_documents_path",
+    "readable_documents_filter",
     "safe_filename",
     "safe_folder_segment",
     "virtual_path_to_doc",

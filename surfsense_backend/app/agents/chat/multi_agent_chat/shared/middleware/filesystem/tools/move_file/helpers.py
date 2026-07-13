@@ -15,7 +15,7 @@ from app.agents.chat.multi_agent_chat.shared.state.filesystem_state import (
     SurfSenseFilesystemState,
 )
 from app.agents.chat.multi_agent_chat.shared.state.reducers import _CLEAR
-from app.agents.chat.runtime.path_resolver import DOCUMENTS_ROOT
+from app.agents.chat.runtime.path_resolver import DOCUMENTS_ROOT, is_shared_path
 
 if TYPE_CHECKING:
     from ...middleware import SurfSenseFilesystemMiddleware
@@ -50,6 +50,20 @@ async def cloud_move_file(
             "Error: cloud move_file destination must be under /documents/ (got "
             f"'{dest}')."
         )
+    # Both ends are guarded: moving *out of* a shared folder would reparent the
+    # sharer's row, and moving *into* one would hand them a document they never
+    # accepted.
+    if is_shared_path(source):
+        return (
+            f"Error: '{source}' belongs to a folder shared with you by another "
+            "workspace and is read-only. Copy it instead."
+        )
+    if is_shared_path(dest):
+        return (
+            f"Error: '{dest}' is inside a folder shared with you by another "
+            "workspace. You cannot write into it."
+        )
+
     anon = runtime.state.get("kb_anon_doc") or {}
     if isinstance(anon, dict):
         anon_path = str(anon.get("path") or "")

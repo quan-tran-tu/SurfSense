@@ -44,6 +44,7 @@ from app.agents.chat.multi_agent_chat.shared.state.filesystem_state import (
 from app.agents.chat.multi_agent_chat.shared.state.reducers import _CLEAR
 from app.agents.chat.runtime.path_resolver import (
     DOCUMENTS_ROOT,
+    is_shared_path,
     parse_documents_path,
     safe_folder_segment,
     virtual_path_to_doc,
@@ -351,6 +352,15 @@ async def _apply_move(
             search_space_id=search_space_id,
             virtual_path=source,
         )
+    if document is not None and document.search_space_id != search_space_id:
+        # Reachable through a share link, but not ours to reparent.
+        logger.warning(
+            "kb_persistence: refusing move %s -> %s — source belongs to another "
+            "search space",
+            source,
+            dest,
+        )
+        return None
     if document is None:
         logger.info(
             "kb_persistence: skipping move %s -> %s (source not found)",
@@ -663,6 +673,29 @@ async def _snapshot_folder_pre_mkdir(
 
 
 # ---------------------------------------------------------------------------
+# Shared-folder write guard
+# ---------------------------------------------------------------------------
+
+
+def _clear_staged_state() -> dict[str, Any]:
+    """State delta that drains every staged filesystem op without committing any.
+
+    Used when the write guard refuses everything staged this turn: the ops must
+    not survive into the next turn to be retried against the same read-only
+    target.
+    """
+    return {
+        "dirty_paths": [_CLEAR],
+        "staged_dirs": [_CLEAR],
+        "staged_dir_tool_calls": {_CLEAR: True},
+        "pending_moves": [_CLEAR],
+        "pending_deletes": [_CLEAR],
+        "pending_dir_deletes": [_CLEAR],
+        "dirty_path_tool_calls": {_CLEAR: True},
+    }
+
+
+# ---------------------------------------------------------------------------
 # Commit body
 # ---------------------------------------------------------------------------
 
@@ -735,6 +768,51 @@ async def commit_staged_filesystem_state(
         or pending_dir_deletes
     ):
         return None
+
+    # ---- Shared-folder write guard (fail closed) --------------------------
+    # Linked folders belong to another search space and are read-only here. This
+    # is the authoritative refusal: the tools reject these paths too, but that is
+    # UX. Dropping the ops before any mutation loop runs means a linked target
+    # cannot reach a DELETE, and in particular cannot reach the rmdir path, where
+    # Folder.parent_id ON DELETE CASCADE plus Document.folder_id ON DELETE SET NULL
+    # would destroy the *sharer's* folder rows and orphan the *sharer's* documents
+    # from their own tree — invisibly, since the importer's own space would look
+    # unchanged.
+    def _refuse(path: str, op: str) -> bool:
+        if is_shared_path(path):
+            logger.warning(
+                "kb_persistence: refusing %s on read-only shared path %s", op, path
+            )
+            return True
+        return False
+
+    staged_dirs = [p for p in staged_dirs if not _refuse(str(p), "mkdir")]
+    dirty_paths = [p for p in dirty_paths if not _refuse(str(p), "write")]
+    pending_moves = [
+        m
+        for m in pending_moves
+        if not _refuse(str(m.get("source") or ""), "move (source)")
+        and not _refuse(str(m.get("dest") or ""), "move (dest)")
+    ]
+    pending_deletes = [
+        e
+        for e in pending_deletes
+        if not (isinstance(e, dict) and _refuse(str(e.get("path") or ""), "rm"))
+    ]
+    pending_dir_deletes = [
+        e
+        for e in pending_dir_deletes
+        if not (isinstance(e, dict) and _refuse(str(e.get("path") or ""), "rmdir"))
+    ]
+
+    if not (
+        staged_dirs
+        or pending_moves
+        or dirty_paths
+        or pending_deletes
+        or pending_dir_deletes
+    ):
+        return _clear_staged_state()
 
     flags = get_flags()
     snapshot_enabled = flags.enable_action_log
@@ -940,6 +1018,15 @@ async def commit_staged_filesystem_state(
                         search_space_id=search_space_id,
                         virtual_path=path,
                     )
+                    if existing is not None and (
+                        existing.search_space_id != search_space_id
+                    ):
+                        logger.warning(
+                            "kb_persistence: refusing write %s — document belongs "
+                            "to another search space",
+                            path,
+                        )
+                        continue
                     if existing is not None:
                         doc_id = existing.id
                         doc_id_by_path[path] = existing.id
@@ -1082,6 +1169,20 @@ async def commit_staged_filesystem_state(
                 if document_to_delete is None:
                     logger.info(
                         "kb_persistence: skipping rm %s (target not found)", final
+                    )
+                    continue
+
+                # virtual_path_to_doc resolves linked (foreign) documents too, so
+                # that `read` works on them. Deleting one would destroy the
+                # sharer's row. Ownership, not reachability, decides.
+                if document_to_delete.search_space_id != search_space_id:
+                    logger.warning(
+                        "kb_persistence: refusing rm %s — document %s belongs to "
+                        "search space %s, not %s",
+                        final,
+                        document_to_delete.id,
+                        document_to_delete.search_space_id,
+                        search_space_id,
                     )
                     continue
 

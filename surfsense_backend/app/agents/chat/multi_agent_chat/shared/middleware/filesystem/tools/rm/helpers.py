@@ -19,7 +19,7 @@ from app.agents.chat.multi_agent_chat.shared.state.filesystem_state import (
     SurfSenseFilesystemState,
 )
 from app.agents.chat.multi_agent_chat.shared.state.reducers import _CLEAR
-from app.agents.chat.runtime.path_resolver import DOCUMENTS_ROOT
+from app.agents.chat.runtime.path_resolver import DOCUMENTS_ROOT, is_shared_path
 
 if TYPE_CHECKING:
     from ...middleware import SurfSenseFilesystemMiddleware
@@ -36,6 +36,12 @@ async def cloud_rm(
     if not validated.startswith(DOCUMENTS_ROOT + "/"):
         return (
             f"Error: cloud rm must target a path under /documents/ (got '{validated}')."
+        )
+
+    if is_shared_path(validated):
+        return (
+            f"Error: '{validated}' belongs to a folder shared with you by another "
+            "workspace and is read-only."
         )
 
     anon = runtime.state.get("kb_anon_doc") or {}

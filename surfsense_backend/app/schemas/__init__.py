@@ -22,6 +22,12 @@ from .documents import (
     ExtensionDocumentMetadata,
     PaginatedResponse,
 )
+from .folder_sharing import (
+    FolderLinkCreate,
+    FolderLinkRead,
+    FolderShareCreate,
+    FolderShareRead,
+)
 from .folders import (
     BulkDocumentMove,
     DocumentMove,
@@ -166,9 +172,13 @@ __all__ = [
     "ExtensionDocumentMetadata",
     "FolderBreadcrumb",
     "FolderCreate",
+    "FolderLinkCreate",
+    "FolderLinkRead",
     "FolderMove",
     "FolderRead",
     "FolderReorder",
+    "FolderShareCreate",
+    "FolderShareRead",
     "FolderUpdate",
     "GoogleDriveIndexRequest",
     "GoogleDriveIndexingOptions",

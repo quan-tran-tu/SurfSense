@@ -398,6 +398,53 @@ remove_folder() {
 	delete_folder "$fid" && info "removed '$kb'"
 }
 
+# ------------------------------------------------------- cross-user sharing
+#
+# All the logic lives in the backend: /share mints a token against a folder in
+# this user's space, /import redeems one into it. The client never sees the
+# other user's document ids, and never does retrieval itself.
+#
+# These use _raw rather than api() because a bad token is a normal outcome in a
+# REPL — api() calls die() on non-2xx, which would kill the session.
+
+soft_api() {
+	_raw "$@" || { warn "network error on $1 $2 (is $SS up?)"; return 1; }
+	if { [ "$HTTP_CODE" = 401 ] || [ "$HTTP_CODE" = 403 ]; } && [ "$RELOGGED" = 0 ]; then
+		RELOGGED=1; login
+		_raw "$@" || { warn "network error on $1 $2"; return 1; }
+	fi
+	case "$HTTP_CODE" in
+		2*) printf '%s' "$BODY"; return 0 ;;
+		*)  return 1 ;;
+	esac
+}
+
+share_folder() {
+	local path=$1 resp token
+	resp=$(soft_api POST "/api/v1/search-spaces/$SPACE_ID/folder-shares" \
+		-H 'Content-Type: application/json' \
+		-d "$(jq -nc --arg p "$path" '{path: $p}')") || {
+		warn "could not share '$path': $(printf '%s' "$BODY" | jq -r '.detail // .' 2>/dev/null)"
+		return 1
+	}
+	token=$(printf '%s' "$resp" | jq -r '.token')
+	printf '\n  Share token for \033[1m%s\033[0m:\n\n    %s\n\n' "$path" "$token"
+	printf '  The recipient runs:  /import %s\n' "$token" >&2
+	printf '  Revoke any time:     DELETE /api/v1/folder-shares/%s\n\n' "$token" >&2
+}
+
+import_folder() {
+	local token=$1 resp name
+	resp=$(soft_api POST "/api/v1/search-spaces/$SPACE_ID/folder-links" \
+		-H 'Content-Type: application/json' \
+		-d "$(jq -nc --arg t "$token" '{token: $t}')") || {
+		warn "could not import: $(printf '%s' "$BODY" | jq -r '.detail // .' 2>/dev/null)"
+		return 1
+	}
+	name=$(printf '%s' "$resp" | jq -r '.folder_name')
+	info "imported '$name' — it is now searchable, and readable at /documents/_shared/$name (read-only)"
+}
+
 list_folders() {
 	local wf
 	wf=$(watched_folders)
@@ -496,6 +543,10 @@ help_text() {
   /reextract <path> [label]  wipe and rebuild a folder's documents
   /rm <label|path>           remove a folder and all its documents
   /folders                   list this user's ingested folders
+  /share <folder-path>       mint a token granting read access to that folder
+                             subtree; hand it to another user
+  /import <token>            redeem a token: the folder becomes searchable here
+                             and readable (read-only) at /documents/_shared/<name>
   /session           show space / thread / model
   /switch <name>     resume or start another session (drops current history
                      from context — do this after /rm, since deleted filenames
@@ -539,6 +590,8 @@ while :; do
 		/add)        if [ -n "$arg" ]; then ingest "${arg%% *}" 0 "$(printf '%s' "$arg" | cut -s -d' ' -f2-)"; else warn "usage: /add <path> [label]"; fi ;;
 		/reextract)  if [ -n "$arg" ]; then ingest "${arg%% *}" 1 "$(printf '%s' "$arg" | cut -s -d' ' -f2-)"; else warn "usage: /reextract <path> [label]"; fi ;;
 		/rm)         if [ -n "$arg" ]; then remove_folder "$arg"; else warn "usage: /rm <label|path>"; fi ;;
+		/share)      if [ -n "$arg" ]; then share_folder "$arg"; else warn "usage: /share <folder-path>  (e.g. /share Research/AI)"; fi ;;
+		/import)     if [ -n "$arg" ]; then import_folder "$arg"; else warn "usage: /import <token>"; fi ;;
 		/*)          warn "unknown command: $cmd (try /help)" ;;
 		*)           ask "$line" ;;
 	esac

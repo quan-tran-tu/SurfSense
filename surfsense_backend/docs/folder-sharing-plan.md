@@ -1,8 +1,44 @@
 # Cross-user folder sharing (`/share` and `/import`)
 
-**Status:** design agreed, not yet implemented.
+**Status:** WS1, WS2, WS3, WS5 implemented; WS4 implemented as the interim option only.
 **Scope:** `surfsense_backend/` only.
-**Date:** 2026-07-09
+**Date:** 2026-07-09 (implemented 2026-07-13)
+
+## Implementation notes (2026-07-13)
+
+Built, but **not yet executed** — the dev box has no backend deps, no Postgres and
+no Docker, so nothing here has been run. `tests/integration/folder_sharing/` is
+written and unverified. Run it before trusting any of this.
+
+Two things the plan got wrong, worth knowing:
+
+- **Paths.** `retrieval/`, `middleware/filesystem/` etc. are really under
+  `app/agents/chat/multi_agent_chat/{shared,main_agent}/`. Line numbers were
+  right; prefixes were not.
+- **`path_resolver` has ~7 space filters, not 2**, and `build_path_index` is the
+  chokepoint feeding `ls`/`glob`/`grep`/the workspace tree/`@`-mentions. Widening
+  it there covered WS2 item 2 and 3 in one place — but it also meant
+  `knowledge_tree/middleware.py` (which the plan never mentions) had to be widened
+  too, or linked folders would have rendered as visibly *empty* directories in the
+  agent's system prompt.
+
+The WS3 hazard was real but differently shaped than described. `rmdir` could not
+in fact have cascaded, because the commit path resolves folders via
+`_resolve_folder_id`, which is space-scoped and returns `None` for a linked path.
+The live hazard was **`rm`**: the commit path resolves documents via
+`virtual_path_to_doc`, and WS2 *had* to teach that function to resolve `_shared`
+paths for `read` to work — which armed a delete of the sharer's row. The guard is
+therefore in three layers: the tools refuse the path (UX), the commit drops the
+staged op before any mutation loop (authoritative), and each resolution site
+asserts `document.search_space_id == search_space_id` (fail-closed backstop).
+
+WS4 shipped as the **interim option** only. The wire format is untouched; instead
+`GET /documents/by-chunk/{id}` falls back to `user_can_read_via_link` when the
+membership check on the sharer's space rejects the caller. This was not optional:
+WS2 makes linked documents retrievable and citable, so without it every citation
+to a linked document 403s on click. The ordinal-payload redesign, the merge-reducer
+re-minting hypothesis, and the `thread_id`-scoping problem are all still open and
+still unexamined.
 
 ## Goal
 
@@ -273,10 +309,21 @@ This is the whole point of doing the work in the backend: the client stays dumb.
 1. Should linked documents appear in the document-list UI
    (`documents_routes.py`, 8 space-filtered queries), or only in retrieval and
    the agent filesystem? Listing them invites the user to try to edit them.
-2. Do `@`-mention pins (`referenced_document_ids`, `runtime/path_resolver.py`)
-   need to resolve into linked folders? If a user can `@`-mention a linked
-   folder, `_build_search_scope` must accept its document ids.
-3. Is `citation_registry` durably queryable by `thread_id` after the turn ends,
-   outside a live graph run? WS4 depends on it entirely.
-4. Per-query liveness join vs. background sweep for revocation. Recommendation:
-   per-query.
+   **Still open — left alone.** The 8 list queries are untouched, so linked
+   documents are searchable and visible to the agent but do *not* appear in the
+   document-list UI. That is a defensible default, not a decision.
+2. Do `@`-mention pins need to resolve into linked folders?
+   **Answered incidentally: yes, they now do.** `mention_resolver` and
+   `references/` both go through `build_path_index`, which was widened, so
+   linked folders became `@`-mentionable without anyone choosing that. Worth a
+   look — `_build_search_scope` accepting linked document ids is probably right,
+   but it was not a deliberate call.
+3. Is `citation_registry` durably queryable by `thread_id` after the turn ends?
+   **Not investigated.** The interim WS4 fix does not depend on it. Any real
+   ordinal-payload work still has to answer this first.
+4. Per-query liveness join vs. background sweep for revocation.
+   **Settled: per-query.** `linked_folder_ids_subquery` checks `revoked_at` and
+   `expires_at` inline, so revocation lands on the next query. `max_uses` is
+   deliberately *not* checked at read time — it caps how many spaces may accept a
+   share, and must not retroactively sever links already granted (the
+   `SearchSpaceInvite` precedent: a used-up invite does not evict members).

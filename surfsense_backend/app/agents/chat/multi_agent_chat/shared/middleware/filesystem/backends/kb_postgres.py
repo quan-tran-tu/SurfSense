@@ -56,6 +56,8 @@ from app.agents.chat.runtime.path_resolver import (
     DOCUMENTS_ROOT,
     build_path_index,
     doc_to_virtual_path,
+    is_shared_path,
+    readable_documents_filter,
     virtual_path_to_doc,
 )
 from app.db import Chunk, Document, shielded_async_session
@@ -63,6 +65,12 @@ from app.db import Chunk, Document, shielded_async_session
 logger = logging.getLogger(__name__)
 
 _TEMP_PREFIX = "temp_"
+
+_READ_ONLY_ERROR = (
+    "Cannot modify {path}: it lives in a folder shared with you by another "
+    "workspace and is read-only. Copy it elsewhere under /documents if you need "
+    "an editable version."
+)
 _GREP_MAX_TOTAL_MATCHES = 50
 _GREP_MAX_PER_DOC = 5
 
@@ -418,7 +426,7 @@ class KBPostgresBackend(BackendProtocol):
 
         result = await session.execute(
             select(Document.id, Document.title, Document.folder_id, Document.updated_at)
-            .where(Document.search_space_id == self.search_space_id)
+            .where(readable_documents_filter(index, self.search_space_id))
             .where(
                 Document.folder_id == target_folder_id
                 if target_folder_id is not None
@@ -572,6 +580,8 @@ class KBPostgresBackend(BackendProtocol):
     # ------------------------------------------------------------------ writes
 
     async def awrite(self, file_path: str, content: str) -> WriteResult:  # type: ignore[override]
+        if is_shared_path(file_path):
+            return WriteResult(error=_READ_ONLY_ERROR.format(path=file_path))
         files = self._state_files()
         if file_path in files:
             return WriteResult(
@@ -593,6 +603,8 @@ class KBPostgresBackend(BackendProtocol):
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
+        if is_shared_path(file_path):
+            return EditResult(error=_READ_ONLY_ERROR.format(path=file_path))
         files = self._state_files()
         file_data = files.get(file_path)
         if file_data is None:
@@ -670,7 +682,7 @@ class KBPostgresBackend(BackendProtocol):
                     index = await build_path_index(session, self.search_space_id)
                     rows = await session.execute(
                         select(Document.id, Document.title, Document.folder_id).where(
-                            Document.search_space_id == self.search_space_id
+                            readable_documents_filter(index, self.search_space_id)
                         )
                     )
                     for row in rows.all():
@@ -751,7 +763,7 @@ class KBPostgresBackend(BackendProtocol):
                     sub = (
                         select(Chunk.document_id, Chunk.id, Chunk.content)
                         .join(Document, Document.id == Chunk.document_id)
-                        .where(Document.search_space_id == self.search_space_id)
+                        .where(readable_documents_filter(index, self.search_space_id))
                         .where(Chunk.content.ilike(f"%{pattern}%"))
                         .order_by(Chunk.document_id, Chunk.position, Chunk.id)
                     )
@@ -856,7 +868,7 @@ class KBPostgresBackend(BackendProtocol):
                         Document.title,
                         Document.folder_id,
                         Document.updated_at,
-                    ).where(Document.search_space_id == self.search_space_id)
+                    ).where(readable_documents_filter(index, self.search_space_id))
                 )
                 doc_rows = list(doc_rows_raw.all())
         except Exception as exc:  # pragma: no cover

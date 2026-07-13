@@ -42,6 +42,7 @@ from app.agents.chat.runtime.path_resolver import (
     PathIndex,
     build_path_index,
     doc_to_virtual_path,
+    readable_documents_filter,
 )
 from app.db import Document, shielded_async_session
 from app.utils.perf import get_perf_logger
@@ -200,7 +201,7 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
                 index = await build_path_index(session, self.search_space_id)
                 doc_rows = await session.execute(
                     select(Document.id, Document.title, Document.folder_id).where(
-                        Document.search_space_id == self.search_space_id
+                        readable_documents_filter(index, self.search_space_id)
                     )
                 )
                 docs = list(doc_rows.all())

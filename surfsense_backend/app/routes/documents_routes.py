@@ -34,6 +34,7 @@ from app.schemas import (
     FolderRead,
     PaginatedResponse,
 )
+from app.services.folder_sharing_service import user_can_read_via_link
 from app.services.task_dispatcher import TaskDispatcher, get_task_dispatcher
 from app.users import get_auth_context
 from app.utils.rbac import check_permission
@@ -998,13 +999,21 @@ async def get_document_by_chunk_id(
                 detail="Document not found",
             )
 
-        await check_permission(
-            session,
-            auth,
-            document.search_space_id,
-            Permission.DOCUMENTS_READ.value,
-            "You don't have permission to read documents in this search space",
-        )
+        # A document reached through a share link keeps the *sharer's*
+        # search_space_id, where the importer has no membership — so the plain
+        # check below rejects a citation the importer is entitled to click.
+        # Fall back to the link before failing.
+        try:
+            await check_permission(
+                session,
+                auth,
+                document.search_space_id,
+                Permission.DOCUMENTS_READ.value,
+                "You don't have permission to read documents in this search space",
+            )
+        except HTTPException:
+            if not await user_can_read_via_link(session, auth.user.id, document):
+                raise
 
         total_result = await session.execute(
             select(func.count())

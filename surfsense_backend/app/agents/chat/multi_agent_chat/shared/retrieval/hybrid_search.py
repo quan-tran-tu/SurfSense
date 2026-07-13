@@ -11,13 +11,14 @@ import asyncio
 import contextlib
 import time
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.config import config
 from app.db import Chunk, Document, DocumentType
 from app.observability import metrics, otel
+from app.services.folder_sharing_service import linked_folder_ids_subquery
 from app.utils.perf import get_perf_logger
 
 from .models import ChunkHit, DocumentHit, SearchScope
@@ -122,7 +123,13 @@ def _base_conditions(
 ) -> list:
     """Filters shared by both search legs."""
     conditions = [
-        Document.search_space_id == search_space_id,
+        # Readable = owned by this space, or inside a folder this space holds a
+        # live link to. Linked documents keep the *sharer's* search_space_id —
+        # nothing is copied — so the plain equality alone would never match them.
+        or_(
+            Document.search_space_id == search_space_id,
+            Document.folder_id.in_(linked_folder_ids_subquery(search_space_id)),
+        ),
         func.coalesce(Document.status["state"].astext, "ready") != "deleting",
     ]
     if document_types:
