@@ -672,6 +672,21 @@ function collectFiles(fileList) {
   return { root, files, paths };
 }
 
+/**
+ * Hand the picked folder to ingest().
+ *
+ * `input.files` is a LIVE FileList bound to the input, not a snapshot. We clear the
+ * input so that re-picking the same folder fires `change` again — and that clearing
+ * empties the FileList we are holding. So copy the entries out FIRST: reading it
+ * afterwards yields zero files, and the upload silently never happens.
+ */
+function onFolderPicked(input) {
+  const files = Array.from(input.files);
+  input.value = "";
+  if (files.length) guard(() => ingest(files));
+  return files;
+}
+
 async function ingest(fileList) {
   const { root, files, paths } = collectFiles(fileList);
   if (!files.length) { toast("No indexable files in that folder.", "warn"); return; }
@@ -1311,11 +1326,7 @@ function init() {
   $("#newSession").addEventListener("keydown", (e) => e.key === "Enter" && $("#newSessionBtn").click());
 
   $("#addFolderBtn").onclick = () => $("#folderPicker").click();
-  $("#folderPicker").onchange = (e) => {
-    const files = e.target.files;
-    e.target.value = "";                      // re-picking the same folder must re-fire
-    if (files.length) guard(() => ingest(files));
-  };
+  $("#folderPicker").onchange = (e) => onFolderPicked(e.target);
 
   $("#importBtn").onclick = () => {
     const token = $("#importToken").value.trim();
