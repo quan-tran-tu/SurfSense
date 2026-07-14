@@ -1,0 +1,1042 @@
+<!doctype html>
+<!--
+  SurfSense mini — a single-file web client for a self-hosted SurfSense backend.
+
+  This is ask.sh in a browser. Same contract, same isolation model: every user gets
+  their own search space named "cli:<email>", which is the backend's real,
+  server-enforced access boundary. Nothing is stored here but your preferences and
+  the share tokens you minted; the session lives in an httpOnly cookie the backend
+  sets, exactly like ask.sh's cookie jar.
+
+  MUST be served from http://localhost:3000. The backend's CSRF middleware
+  (app/auth/csrf.py) rejects any cookie-authenticated POST/PUT/DELETE whose Origin
+  isn't allow-listed, and :3000 is the origin ask.sh sends by default. Opening this
+  file with file:// sends Origin: null and every write fails with 403.
+
+      python -m http.server 3000 --directory surfsense_backend/scripts/web
+
+  See ../ask.sh and ../../docs/surfsense-backend-api-cookbook.md.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SurfSense</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161922; --panel-2: #1c202b; --line: #272c39;
+    --fg: #e6e8ee; --muted: #8b93a7; --accent: #4c8dff; --accent-fg: #fff;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149; --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg); font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  button {
+    font: inherit; color: var(--fg); background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+  button.sm { padding: 2px 8px; font-size: 12px; }
+  input, select, textarea {
+    font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 10px; width: 100%;
+  }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  code, pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  /* ---- auth ---- */
+  #auth { margin: auto; width: 420px; max-width: 92vw; padding: 28px;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  #auth h1 { margin: 0 0 2px; font-size: 20px; }
+  #auth .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  #auth .row { display: flex; gap: 8px; margin-top: 18px; }
+  #auth .row button { flex: 1; }
+  details.adv summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 16px; }
+
+  /* ---- app shell ---- */
+  #app { display: none; flex: 1; min-height: 0; }
+  #app.on { display: flex; }
+  aside {
+    width: 300px; flex: none; background: var(--panel); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; overflow-y: auto;
+  }
+  aside section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  aside h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+    margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .item {
+    display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px;
+    cursor: pointer; font-size: 13px;
+  }
+  .item:hover { background: var(--panel-2); }
+  .item.active { background: var(--accent); color: var(--accent-fg); }
+  .item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .act { opacity: 0; flex: none; }
+  .item:hover .act { opacity: 1; }
+  .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 2px 8px; }
+  .stack { display: flex; gap: 6px; }
+  .stack input { min-width: 0; }
+
+  /* ---- chat ---- */
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #msgs { flex: 1; overflow-y: auto; padding: 24px 0; }
+  .msg { max-width: 760px; margin: 0 auto 22px; padding: 0 24px; }
+  .who { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 5px; }
+  .msg.user .bubble {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 14px; white-space: pre-wrap;
+  }
+  .bubble { overflow-wrap: anywhere; }
+  .bubble > :first-child { margin-top: 0; }
+  .bubble > :last-child { margin-bottom: 0; }
+  .bubble pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 12px; overflow-x: auto;
+  }
+  .bubble code:not(pre code) { background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+  .bubble a { color: var(--accent); }
+  .status { color: var(--muted); font-size: 12px; font-style: italic; }
+  .status.err { color: var(--err); font-style: normal; }
+  .status.warn { color: var(--warn); font-style: normal; }
+  .cursor::after { content: "▍"; opacity: .6; }
+
+  footer { border-top: 1px solid var(--line); padding: 14px 24px 16px; background: var(--panel); }
+  .composer { max-width: 760px; margin: 0 auto; }
+  .composer .box { display: flex; gap: 8px; align-items: flex-end; }
+  #q { resize: none; max-height: 180px; }
+  .opts {
+    max-width: 760px; margin: 8px auto 0; display: flex; gap: 16px; align-items: center;
+    font-size: 12px; color: var(--muted);
+  }
+  .opts label { display: flex; gap: 6px; align-items: center; margin: 0; cursor: pointer; }
+  .opts input[type=checkbox] { width: auto; }
+
+  /* ---- progress + toast ---- */
+  .bar { height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+  .toast {
+    background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 10px 14px; max-width: 420px; font-size: 13px; white-space: pre-wrap;
+  }
+  .toast.err { border-left-color: var(--err); }
+  .toast.warn { border-left-color: var(--warn); }
+  .toast.ok { border-left-color: var(--ok); }
+  .token { word-break: break-all; font-size: 11px; background: var(--bg); border: 1px solid var(--line);
+           border-radius: 4px; padding: 6px; margin: 6px 0; }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- ============================ auth ============================ -->
+<div id="auth">
+  <h1>SurfSense</h1>
+  <div class="sub">A private knowledge base you can ask questions.</div>
+  <div id="originWarn" class="toast err hide" style="max-width:none;margin-bottom:12px"></div>
+
+  <label for="email">Email</label>
+  <input id="email" type="email" autocomplete="username" placeholder="you@example.com">
+
+  <label for="password">Password</label>
+  <input id="password" type="password" autocomplete="current-password" placeholder="min. 8 characters">
+
+  <label for="apiKey">DeepSeek API key <span title="Wires the chat model to your user. Stored server-side on a model connection scoped to your search space.">ⓘ</span></label>
+  <input id="apiKey" type="password" placeholder="sk-...">
+
+  <label for="session">Session</label>
+  <input id="session" placeholder="research">
+
+  <details class="adv">
+    <summary>Advanced</summary>
+    <label for="backend">Backend URL</label>
+    <input id="backend" placeholder="http://localhost:8000">
+    <label for="model">Model</label>
+    <input id="model" placeholder="deepseek-chat">
+    <label for="modelBase">Model base URL</label>
+    <input id="modelBase" placeholder="https://api.deepseek.com/v1">
+  </details>
+
+  <div class="row">
+    <button id="loginBtn" class="primary">Sign in</button>
+    <button id="registerBtn">Register</button>
+  </div>
+  <div id="authMsg" class="note"></div>
+</div>
+
+<!-- ============================ app ============================ -->
+<div id="app">
+  <aside>
+    <section>
+      <h2>Session</h2>
+      <div id="sessions"></div>
+      <div class="stack" style="margin-top:8px">
+        <input id="newSession" placeholder="new session…">
+        <button id="newSessionBtn" class="sm">Start</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>
+        Folders
+        <button id="addFolderBtn" class="sm">+ Add</button>
+      </h2>
+      <input id="folderPicker" type="file" webkitdirectory directory multiple class="hide">
+      <div id="folders"></div>
+      <div id="ingest" class="hide">
+        <div class="note" id="ingestMsg"></div>
+        <div class="bar"><div id="ingestBar"></div></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Shares</h2>
+      <div id="shares"></div>
+      <div class="stack" style="margin-top:8px">
+        <input id="importToken" placeholder="paste a share token…">
+        <button id="importBtn" class="sm">Import</button>
+      </div>
+    </section>
+
+    <section style="margin-top:auto; border-bottom:none">
+      <div class="note mono" id="whoami"></div>
+      <button id="signOut" class="sm" style="margin-top:8px; width:100%">Sign out</button>
+    </section>
+  </aside>
+
+  <main>
+    <div id="msgs"></div>
+    <footer>
+      <div class="composer">
+        <div class="box">
+          <textarea id="q" rows="1" placeholder="Ask your knowledge base…  (Enter to send, Shift+Enter for a newline)"></textarea>
+          <button id="send" class="primary">Send</button>
+        </div>
+        <div class="opts">
+          <label>
+            <input type="checkbox" id="forceSearch" checked>
+            Force retrieval
+            <span title="Prepends the directive from ask.sh's build_query() that compels the agent to call search_knowledge_base. Without it, weaker models answer from memory.">ⓘ</span>
+          </label>
+          <span id="ctx" class="mono"></span>
+        </div>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ utils */
+
+const $ = (sel) => document.querySelector(sel);
+const LS = "surfsense.mini";
+
+const state = {
+  backend: "http://localhost:8000",
+  email: "", password: "", apiKey: "",
+  model: "deepseek-chat", modelBase: "https://api.deepseek.com/v1",
+  session: "research", forceSearch: true,
+  spaceId: null, threadId: null,
+  relogged: false, busy: false,
+  shares: [],       // [{path, token}] — the backend has no list endpoint, so we remember
+};
+
+function savePrefs() {
+  localStorage.setItem(LS, JSON.stringify({
+    backend: state.backend, email: state.email, apiKey: state.apiKey,
+    model: state.model, modelBase: state.modelBase, session: state.session,
+    forceSearch: state.forceSearch, shares: state.shares,
+  }));
+}
+function loadPrefs() {
+  try { Object.assign(state, JSON.parse(localStorage.getItem(LS) || "{}")); } catch {}
+}
+
+function toast(msg, kind = "ok", ms = 6000) {
+  const t = document.createElement("div");
+  t.className = `toast ${kind}`;
+  t.textContent = msg;
+  $("#toasts").append(t);
+  setTimeout(() => t.remove(), ms);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* --------------------------------------------------------------- transport */
+
+/** The backend speaks {"detail": ...} on errors; fall back to the raw body. */
+async function errorDetail(res) {
+  const body = await res.text();
+  try {
+    const j = JSON.parse(body);
+    return typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail ?? j);
+  } catch { return body || `HTTP ${res.status}`; }
+}
+
+class ApiError extends Error {
+  constructor(status, detail) { super(detail); this.status = status; this.detail = detail; }
+}
+
+/**
+ * Every request carries the session cookie (credentials: "include"). The browser
+ * sets Origin for us, which is what the backend's CSRF check reads — hence the
+ * hard requirement to serve this page from an allow-listed origin (:3000).
+ *
+ * Re-logs-in once on 401/403, mirroring ask.sh's api(): the session cookie is
+ * short-lived (~1h) and expiring mid-session shouldn't be a visible failure.
+ */
+async function api(method, path, opts = {}) {
+  const send = () => fetch(state.backend + path, {
+    method,
+    credentials: "include",
+    headers: opts.json ? { "Content-Type": "application/json" } : undefined,
+    body: opts.json ? JSON.stringify(opts.json) : opts.body,
+    signal: opts.signal,
+  });
+
+  let res;
+  try { res = await send(); }
+  catch { throw new ApiError(0, `cannot reach ${state.backend} — is the backend up?`); }
+
+  if ((res.status === 401 || res.status === 403) && !state.relogged && state.password) {
+    state.relogged = true;
+    await login(state.email, state.password);
+    state.relogged = false;
+    try { res = await send(); }
+    catch { throw new ApiError(0, `cannot reach ${state.backend}`); }
+  }
+  if (!res.ok) throw new ApiError(res.status, await errorDetail(res));
+  return res;
+}
+
+const apiJson = async (method, path, opts) => {
+  const res = await api(method, path, opts);
+  return res.status === 204 ? null : res.json();
+};
+
+async function login(email, password) {
+  const res = await fetch(state.backend + "/auth/jwt/login", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ username: email, password }),
+  }).catch(() => { throw new ApiError(0, `cannot reach ${state.backend}`); });
+
+  if (res.status === 400) throw new ApiError(400, "Bad credentials. Register first, or check the password.");
+  if (!res.ok) throw new ApiError(res.status, await errorDetail(res));
+}
+
+async function register(email, password) {
+  const res = await fetch(state.backend + "/auth/register", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  }).catch(() => { throw new ApiError(0, `cannot reach ${state.backend}`); });
+
+  if (res.ok) return "registered";
+  const detail = await errorDetail(res);
+  if (res.status === 400 && detail.includes("REGISTER_USER_ALREADY_EXISTS")) return "exists";
+  if (res.status === 403) throw new ApiError(403, "Registration is disabled on this backend (AUTH_TYPE=GOOGLE, or REGISTRATION_ENABLED off).");
+  if (res.status === 422) throw new ApiError(422, "Invalid email, or password too short (min. 8 characters).");
+  if (res.status === 429) throw new ApiError(429, "Rate limited by the backend. Wait, then retry.");
+  throw new ApiError(res.status, detail);
+}
+
+/* -------------------------------------------------------------- bootstrap */
+
+/**
+ * One space per user, named cli:<email> — the same space ask.sh uses, so the two
+ * clients see one knowledge base. A search space is the server-enforced access
+ * boundary; we never let the user name one by id.
+ */
+async function ensureSpace() {
+  const want = `cli:${state.email}`;
+  const spaces = await apiJson("GET", "/api/v1/searchspaces?limit=200&skip=0&owned_only=true");
+  const found = (spaces || []).find((s) => s.name === want);
+  if (found) { state.spaceId = found.id; return; }
+
+  const made = await apiJson("POST", "/api/v1/searchspaces", {
+    json: { name: want, description: "Private CLI knowledge base" },
+  });
+  state.spaceId = made.id;
+  toast(`Created your private search space #${made.id}`);
+}
+
+/**
+ * Create-or-update the model connection, then point the space's *chat role* at
+ * the model row it produced. Both halves are required: a connection alone leaves
+ * the chat role unset and every question fails. provider=openai + an explicit
+ * base_url keeps the key strictly per-connection.
+ */
+async function ensureModel() {
+  const conns = await apiJson("GET", `/api/v1/model-connections?search_space_id=${state.spaceId}`);
+  const conn = (conns || []).find((c) => c.base_url === state.modelBase && c.search_space_id != null);
+
+  let modelRowId = null;
+  if (conn) {
+    await api("PUT", `/api/v1/model-connections/${conn.id}`, {
+      json: { api_key: state.apiKey, enabled: true },
+    });
+    modelRowId = (conn.models || []).find((m) => m.model_id === state.model)?.id ?? null;
+  }
+
+  if (!modelRowId) {
+    // The connection exists but carries no row for this model id — rebuild it clean.
+    if (conn) await api("DELETE", `/api/v1/model-connections/${conn.id}`);
+    const made = await apiJson("POST", "/api/v1/model-connections", {
+      json: {
+        provider: "openai", base_url: state.modelBase, api_key: state.apiKey,
+        scope: "SEARCH_SPACE", search_space_id: state.spaceId, enabled: true,
+        models: [{
+          model_id: state.model, display_name: state.model, source: "MANUAL",
+          supports_chat: true, supports_tools: true, enabled: true,
+        }],
+      },
+    });
+    modelRowId = (made.models || []).find((m) => m.model_id === state.model)?.id ?? null;
+    if (!modelRowId) throw new ApiError(0, `connection created, but it has no model row for "${state.model}"`);
+  }
+
+  const roles = await apiJson("GET", `/api/v1/search-spaces/${state.spaceId}/model-roles`);
+  if (roles?.chat_model_id !== modelRowId) {
+    await api("PUT", `/api/v1/search-spaces/${state.spaceId}/model-roles`, {
+      json: { chat_model_id: modelRowId },
+    });
+  }
+}
+
+/* ---------------------------------------------------------------- threads */
+
+const listThreads = async () => {
+  const r = await apiJson("GET", `/api/v1/threads?search_space_id=${state.spaceId}`);
+  return r?.threads ?? r?.items ?? (Array.isArray(r) ? r : []);
+};
+
+/** Resume the thread titled `title`, or start one. A session is just a thread title. */
+async function ensureThread(title) {
+  const found = (await listThreads()).find((t) => t.title === title);
+  const thread = found ?? await apiJson("POST", "/api/v1/threads", {
+    json: { search_space_id: state.spaceId, title },
+  });
+  state.session = title;
+  state.threadId = thread.id;
+  savePrefs();
+  await Promise.all([renderSessions(), loadHistory()]);
+  renderContext();
+}
+
+/**
+ * Assistant-ui stores message content as JSONB: a plain string on some rows, an
+ * array of typed parts on others. Take the text and ignore the rest.
+ */
+function messageText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.filter((p) => p?.type === "text" && typeof p.text === "string")
+                  .map((p) => p.text).join("");
+  }
+  if (content && typeof content.text === "string") return content.text;
+  return "";
+}
+
+/** Questions go to the backend wrapped in the force-retrieval directive; show only what the user typed. */
+const unwrapQuestion = (text) => text.match(/<question>\n([\s\S]*?)\n<\/question>/)?.[1] ?? text;
+
+async function loadHistory() {
+  $("#msgs").replaceChildren();
+  const history = await apiJson("GET", `/api/v1/threads/${state.threadId}`);
+  for (const m of history?.messages ?? []) {
+    const text = messageText(m.content);
+    if (!text.trim()) continue;
+    if (m.role === "user") addMessage("user", unwrapQuestion(text));
+    else if (m.role === "assistant") addMessage("assistant", text);
+  }
+  scrollDown();
+}
+
+/* ---------------------------------------------------------------- folders */
+
+const watchedFolders = () =>
+  apiJson("GET", `/api/v1/documents/watched-folders?search_space_id=${state.spaceId}`);
+
+/** folder_id filtering is exact, not recursive — walk the tree ourselves. */
+async function subtreeIds(rootId) {
+  const all = await apiJson("GET", `/api/v1/folders?search_space_id=${state.spaceId}`) ?? [];
+  const ids = new Set([rootId]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const f of all) {
+      if (f.parent_id != null && ids.has(f.parent_id) && !ids.has(f.id)) { ids.add(f.id); grew = true; }
+    }
+  }
+  return ids;
+}
+
+async function docsIn(ids) {
+  const page = await apiJson("GET",
+    `/api/v1/documents?search_space_id=${state.spaceId}&document_types=LOCAL_FOLDER_FILE&page_size=-1`);
+  return (page?.items ?? []).filter((d) => d.folder_id != null && ids.has(d.folder_id));
+}
+
+const MAX_FILE_BYTES = 500 * 1024 * 1024;
+const BATCH = 20;
+const POLL_MS = 3000, TIMEOUT_MS = 1_800_000, STABLE_POLLS = 2;
+
+/**
+ * Blocks until every document under `rootId` has settled. A folder can't answer
+ * anything until it is fully indexed, and Celery keeps inserting rows after the
+ * upload returns — so "nothing is processing" only counts once the numbers hold
+ * still for STABLE_POLLS consecutive reads.
+ */
+async function waitReady(rootId, expected, onProgress) {
+  let waited = 0, stable = 0, last = "";
+  while (waited < TIMEOUT_MS) {
+    const docs = await docsIn(await subtreeIds(rootId));
+    const ready = docs.filter((d) => d.status?.state === "ready").length;
+    const failed = docs.filter((d) => d.status?.state === "failed").length;
+    const busy = docs.filter((d) => ["processing", "deleting"].includes(d.status?.state)).length;
+
+    onProgress(ready, expected, busy, failed);
+
+    if (docs.length > 0 && busy === 0) {
+      const snap = `${docs.length}:${ready}:${failed}`;
+      if (snap === last) { if (++stable >= STABLE_POLLS) return { ready, failed }; }
+      else stable = 0;
+      last = snap;
+    } else {
+      last = `${docs.length}:${ready}:${failed}`;
+    }
+    await sleep(POLL_MS);
+    waited += POLL_MS;
+  }
+  throw new ApiError(0, "timed out waiting for indexing — is the Celery worker running?");
+}
+
+/**
+ * The browser hands us a folder as a flat FileList whose webkitRelativePath is
+ * "<root>/<sub>/<file>". The first segment is the folder name — everything after
+ * it is the relative path the backend wants. Skip dotfiles and oversized files,
+ * matching ask.sh's collect_files.
+ */
+function collectFiles(fileList) {
+  const files = [], paths = [];
+  let root = "";
+  for (const f of fileList) {
+    const segs = (f.webkitRelativePath || f.name).split("/");
+    if (!root) root = segs[0];
+    if (segs.some((s) => s.startsWith("."))) continue;
+    if (f.size > MAX_FILE_BYTES) continue;
+    files.push(f);
+    paths.push(segs.slice(1).join("/"));
+  }
+  return { root, files, paths };
+}
+
+async function ingest(fileList) {
+  const { root, files, paths } = collectFiles(fileList);
+  if (!files.length) { toast("No indexable files in that folder.", "warn"); return; }
+
+  // The KB label is the basename, never a full disk path: it becomes Folder.name,
+  // which the agent sees as /documents/<name>/… — a full path would leak the
+  // machine's directory layout into every prompt.
+  const existing = (await watchedFolders() ?? []).find((f) => f.name === root);
+  if (existing && !confirm(`"${root}" is already indexed. Rebuild it? Its documents will be deleted and re-extracted.`)) return;
+
+  const panel = $("#ingest"), bar = $("#ingestBar"), msg = $("#ingestMsg");
+  panel.classList.remove("hide");
+  const progress = (text, frac) => { msg.textContent = text; bar.style.width = `${Math.round(frac * 100)}%`; };
+
+  try {
+    if (existing) { progress(`removing old "${root}"…`, 0); await deleteFolder(existing.id); }
+
+    let rootId = null;
+    for (let i = 0; i < files.length; i += BATCH) {
+      const chunk = files.slice(i, i + BATCH);
+      const fd = new FormData();
+      fd.append("folder_name", root);
+      fd.append("search_space_id", String(state.spaceId));
+      fd.append("relative_paths", JSON.stringify(paths.slice(i, i + BATCH)));
+      if (rootId) fd.append("root_folder_id", String(rootId));
+      for (const f of chunk) fd.append("files", f, f.name);
+
+      const res = await apiJson("POST", "/api/v1/documents/folder-upload", { body: fd });
+      rootId ??= res?.root_folder_id;
+      if (!rootId) throw new ApiError(0, "folder-upload returned no root_folder_id");
+      progress(`uploading ${Math.min(i + BATCH, files.length)}/${files.length}…`, (i + chunk.length) / files.length * 0.5);
+    }
+
+    // Drop documents for files that are no longer on disk.
+    await api("POST", "/api/v1/documents/folder-sync-finalize", {
+      json: {
+        folder_name: root, search_space_id: state.spaceId,
+        root_folder_id: rootId, all_relative_paths: paths,
+      },
+    });
+
+    const { ready, failed } = await waitReady(rootId, files.length, (r, exp, busy, bad) =>
+      progress(`indexing ${r}/${exp} · ${busy} processing · ${bad} failed`, 0.5 + (r / exp) * 0.5));
+
+    if (ready < files.length) {
+      const missing = files.length - ready - failed;
+      toast(`Indexed ${ready}/${files.length} in "${root}". ${failed} failed; ` +
+            `${missing} produced no document (unsupported type, or identical content already indexed).`, "warn", 12000);
+    } else {
+      toast(`Indexed ${ready} file(s) into "${root}".`, "ok");
+    }
+  } catch (e) {
+    toast(`Ingest of "${root}" failed: ${e.message}`, "err", 12000);
+  } finally {
+    panel.classList.add("hide");
+    bar.style.width = "0";
+    await renderFolders();
+  }
+}
+
+async function deleteFolder(id) {
+  await api("DELETE", `/api/v1/folders/${id}`);
+  for (let waited = 0; waited < TIMEOUT_MS; waited += POLL_MS) {
+    const all = await apiJson("GET", `/api/v1/folders?search_space_id=${state.spaceId}`) ?? [];
+    if (!all.some((f) => f.id === id)) return;
+    await sleep(POLL_MS);
+  }
+  throw new ApiError(0, `folder #${id} is still present after ${TIMEOUT_MS / 1000}s`);
+}
+
+/* ----------------------------------------------------------------- shares */
+
+async function shareFolder(path) {
+  const { token } = await apiJson("POST", `/api/v1/search-spaces/${state.spaceId}/folder-shares`, {
+    json: { path },
+  });
+  state.shares.push({ path, token });
+  savePrefs();
+  renderShares();
+  toast(`Share token for "${path}" created. Hand it to the other user — they paste it under Shares → Import.`, "ok", 10000);
+}
+
+async function unshareFolder(token) {
+  await api("DELETE", `/api/v1/folder-shares/${token}`);
+  state.shares = state.shares.filter((s) => s.token !== token);
+  savePrefs();
+  renderShares();
+  toast("Revoked. Importers lose access on their next query.", "ok");
+}
+
+async function importFolder(token) {
+  const { folder_name } = await apiJson("POST", `/api/v1/search-spaces/${state.spaceId}/folder-links`, {
+    json: { token },
+  });
+  toast(`Imported "${folder_name}" — it is searchable now, and readable (read-only) at /documents/_shared/${folder_name}.`, "ok", 10000);
+  await renderFolders();
+}
+
+/* ------------------------------------------------------------------- chat */
+
+/**
+ * The backend has no "always retrieve" switch: whether search_knowledge_base runs
+ * is the model's own choice. Weaker models skip it and answer from memory, so we
+ * compel retrieval in-band — verbatim from ask.sh's build_query().
+ */
+function buildQuery(q) {
+  if (!state.forceSearch) return q;
+  return `<instructions>
+Before answering you MUST search the knowledge base: delegate to the knowledge_base
+subagent and call search_knowledge_base at least once. Do not answer from prior
+knowledge alone. Never tell the user to check their knowledge base — search it yourself.
+
+The question may not be in English, and the indexed documents may be in a different
+language than the question. Search using terms in the language of the documents; if
+unsure, search once in the document language and once in English. Then answer in the
+same language the user used, citing the retrieved passages.
+
+Answer ONLY from passages returned by search_knowledge_base.
+
+If the search returns nothing relevant, reply with a single short sentence saying the
+knowledge base contains no information on the question, in the user's language. Then stop.
+In that case you must NOT:
+  - list, name, or describe any file, document title, folder, or directory path;
+  - report what the knowledge base does or does not contain beyond that one sentence;
+  - speculate about the subject from your own knowledge;
+  - offer to search the web, or ask the user to upload anything.
+
+Never reveal filenames, folder names, or paths from tool output — including from ls or
+any filesystem tool — unless the user explicitly asked which documents exist. Cite
+sources by their title only.
+</instructions>
+
+<question>
+${q}
+</question>`;
+}
+
+async function ask(question) {
+  if (state.busy) return;
+  state.busy = true;
+  $("#send").disabled = true;
+
+  addMessage("user", question);
+  const { bubble, setStatus } = addMessage("assistant", "", true);
+  let answer = "";
+
+  try {
+    const res = await api("POST", "/api/v1/new_chat", {
+      json: {
+        chat_id: state.threadId,
+        search_space_id: state.spaceId,
+        user_query: buildQuery(question),
+      },
+    });
+
+    // The AI SDK stream protocol: `data: {json}` lines. The answer is the
+    // concatenation of every text-delta; everything else is thinking steps, tool
+    // calls and status. The stream also ends with a literal `data: [DONE]`.
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).replace(/\r$/, "");
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+
+        let ev;
+        try { ev = JSON.parse(payload); } catch { continue; }
+
+        if (ev.type === "text-delta" && typeof ev.delta === "string") {
+          answer += ev.delta;
+          bubble.innerHTML = renderMarkdown(answer);
+          scrollDown();
+        } else if (!answer && typeof ev.type === "string") {
+          setStatus(describeEvent(ev));   // surfaces whether it actually searched
+        }
+      }
+    }
+
+    if (!answer) {
+      setStatus("The stream carried no answer. Usually: the model errored before " +
+                "replying, or the chat role isn't wired to a working key.", "err");
+    } else {
+      setStatus(null);
+    }
+  } catch (e) {
+    setStatus(e.message, "err");
+  } finally {
+    bubble.classList.remove("cursor");
+    state.busy = false;
+    $("#send").disabled = false;
+    $("#q").focus();
+  }
+}
+
+/** Human-readable label for the pre-answer events, so a silent run is diagnosable. */
+function describeEvent(ev) {
+  const name = ev.toolName ?? ev.tool_name ?? "";
+  if (ev.type.startsWith("tool")) {
+    if (name.includes("search")) return "searching the knowledge base…";
+    return name ? `calling ${name}…` : "calling a tool…";
+  }
+  if (ev.type.includes("thinking") || ev.type.includes("reasoning")) return "thinking…";
+  if (ev.type === "task" || ev.type.includes("agent")) return "delegating to the knowledge_base agent…";
+  return "working…";
+}
+
+/* -------------------------------------------------------------- rendering */
+
+const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/**
+ * Just enough Markdown for an LLM answer - no dependency, no CDN, no build.
+ * Everything is HTML-escaped up front, so the tags below are the only ones that
+ * can reach the DOM: a model that emits <script> gets it shown as text.
+ */
+function renderMarkdown(src) {
+  // Fenced code is lifted out first and put back last, so the inline rules below
+  // never mangle its contents.
+  const fences = [];
+  let text = escapeHtml(src).replace(/```\w*\n?([\s\S]*?)```/g, (_, code) => {
+    fences.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
+    return `\n\n@@FENCE${fences.length - 1}@@\n\n`;
+  });
+
+  text = text
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/^\s*#{1,6}\s+(.+)$/gm, "<h4>$1</h4>")
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+(.+)$/gm, "<li>$1</li>")
+    .replace(/(?:<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
+
+  text = text.split(/\n{2,}/).map((para) => {
+    const p = para.trim();
+    if (!p) return "";
+    if (/^@@FENCE\d+@@$/.test(p) || /^<(ul|h4)/.test(p)) return p;
+    return `<p>${p.replace(/\n/g, "<br>")}</p>`;
+  }).join("");
+
+  return text.replace(/@@FENCE(\d+)@@/g, (_, i) => fences[+i]);
+}
+const scrollDown = () => { const m = $("#msgs"); m.scrollTop = m.scrollHeight; };
+
+function addMessage(role, text, streaming = false) {
+  const wrap = document.createElement("div");
+  wrap.className = `msg ${role}`;
+
+  const who = document.createElement("div");
+  who.className = "who";
+  who.textContent = role === "user" ? "You" : state.model;
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble" + (streaming ? " cursor" : "");
+  if (role === "user") bubble.textContent = text;
+  else bubble.innerHTML = renderMarkdown(text);
+
+  const status = document.createElement("div");
+  status.className = "status";
+
+  wrap.append(who, bubble, status);
+  $("#msgs").append(wrap);
+  scrollDown();
+
+  const setStatus = (msg, kind = "") => {
+    status.textContent = msg ?? "";
+    status.className = `status ${kind}`;
+  };
+  return { bubble, setStatus };
+}
+
+async function renderSessions() {
+  const box = $("#sessions");
+  const threads = await listThreads();
+  box.replaceChildren();
+  if (!threads.length) { box.innerHTML = '<div class="empty">no sessions yet</div>'; return; }
+
+  for (const t of threads) {
+    const row = document.createElement("div");
+    row.className = "item" + (t.id === state.threadId ? " active" : "");
+    row.innerHTML = `<span class="name"></span>`;
+    row.querySelector(".name").textContent = t.title;
+    row.onclick = () => t.id !== state.threadId && guard(() => ensureThread(t.title));
+    box.append(row);
+  }
+}
+
+async function renderFolders() {
+  const box = $("#folders");
+  const folders = await watchedFolders() ?? [];
+  box.replaceChildren();
+  if (!folders.length) { box.innerHTML = '<div class="empty">no folders indexed</div>'; return; }
+
+  for (const f of folders) {
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = `<span class="name"></span>
+      <button class="sm act" data-a="share">Share</button>
+      <button class="sm act danger" data-a="rm">✕</button>`;
+    row.querySelector(".name").textContent = f.name;
+    row.querySelector('[data-a="share"]').onclick = () => guard(() => shareFolder(f.name));
+    row.querySelector('[data-a="rm"]').onclick = () => {
+      if (confirm(`Remove "${f.name}" and all of its documents?`)) {
+        guard(async () => { await deleteFolder(f.id); toast(`Removed "${f.name}".`); await renderFolders(); });
+      }
+    };
+    box.append(row);
+  }
+}
+
+function renderShares() {
+  const box = $("#shares");
+  box.replaceChildren();
+  if (!state.shares.length) { box.innerHTML = '<div class="empty">nothing shared</div>'; return; }
+
+  for (const s of state.shares) {
+    const row = document.createElement("div");
+    row.innerHTML = `<div class="item" style="cursor:default">
+        <span class="name mono"></span>
+        <button class="sm" data-a="copy">Copy</button>
+        <button class="sm danger" data-a="rm">Revoke</button>
+      </div>
+      <div class="token mono"></div>`;
+    row.querySelector(".name").textContent = s.path;
+    row.querySelector(".token").textContent = s.token;
+    row.querySelector('[data-a="copy"]').onclick = () =>
+      navigator.clipboard.writeText(s.token).then(() => toast("Token copied."));
+    row.querySelector('[data-a="rm"]').onclick = () => guard(() => unshareFolder(s.token));
+    box.append(row);
+  }
+}
+
+function renderContext() {
+  $("#ctx").textContent = `space #${state.spaceId} · thread #${state.threadId}`;
+  $("#whoami").textContent = `${state.email}\ncli:${state.email}`;
+}
+
+/* ------------------------------------------------------------------ wiring */
+
+/** Runs an async handler, turning any ApiError into a toast instead of a dead UI. */
+async function guard(fn) {
+  try { await fn(); }
+  catch (e) { toast(e.message, "err", 10000); }
+}
+
+function showApp() {
+  $("#auth").classList.add("hide");
+  $("#app").classList.add("on");
+  $("#q").focus();
+}
+
+async function start() {
+  await ensureSpace();
+  await ensureModel();
+  await ensureThread(state.session);
+  await renderFolders();
+  renderShares();
+  renderContext();
+  showApp();
+}
+
+async function doAuth(mode) {
+  const email = $("#email").value.trim();
+  const password = $("#password").value;
+  const apiKey = $("#apiKey").value.trim();
+  const session = $("#session").value.trim() || "research";
+
+  if (!email || !password) { $("#authMsg").textContent = "Email and password are required."; return; }
+  if (!apiKey) { $("#authMsg").textContent = "The API key is required — it wires the chat model to your user."; return; }
+
+  Object.assign(state, {
+    email, password, apiKey, session,
+    backend: ($("#backend").value.trim() || "http://localhost:8000").replace(/\/$/, ""),
+    model: $("#model").value.trim() || "deepseek-chat",
+    modelBase: $("#modelBase").value.trim() || "https://api.deepseek.com/v1",
+  });
+  savePrefs();
+
+  const btns = [$("#loginBtn"), $("#registerBtn")];
+  btns.forEach((b) => (b.disabled = true));
+  $("#authMsg").textContent = mode === "register" ? "Registering…" : "Signing in…";
+
+  try {
+    if (mode === "register") {
+      const r = await register(email, password);
+      $("#authMsg").textContent = r === "exists" ? "Already registered — signing in…" : "Registered. Signing in…";
+    }
+    await login(email, password);
+    $("#authMsg").textContent = "Setting up your knowledge base…";
+    await start();
+  } catch (e) {
+    $("#authMsg").textContent = `Error: ${e.message}`;
+  } finally {
+    btns.forEach((b) => (b.disabled = false));
+  }
+}
+
+function init() {
+  loadPrefs();
+  $("#backend").value = state.backend;
+  $("#email").value = state.email;
+  $("#apiKey").value = state.apiKey;
+  $("#model").value = state.model;
+  $("#modelBase").value = state.modelBase;
+  $("#session").value = state.session;
+  $("#forceSearch").checked = state.forceSearch;
+
+  // Origin is the whole ballgame: the backend's CSRF middleware only accepts an
+  // allow-listed one, and file:// sends "null". Fail loudly rather than let every
+  // write 403 with no explanation.
+  if (location.protocol === "file:") {
+    const w = $("#originWarn");
+    w.classList.remove("hide");
+    w.textContent = "Opened as a file:// page, so the browser sends \"Origin: null\" and every " +
+      "write will fail the backend's CSRF check.\n\nServe it instead:\n" +
+      "  python -m http.server 3000 --directory surfsense_backend/scripts/web\n\n" +
+      "then open http://localhost:3000.";
+  } else if (location.port !== "3000") {
+    const w = $("#originWarn");
+    w.classList.remove("hide");
+    w.className = "toast warn";
+    w.textContent = `Served from port ${location.port || "80"}. The backend only trusts ` +
+      `http://localhost:3000 for cookie-authenticated writes (CSRF_ALLOWED_ORIGINS / ` +
+      `NEXT_FRONTEND_URL), so uploads and questions may fail with 403. Serve on :3000, or ` +
+      `add this origin to CSRF_ALLOWED_ORIGINS.`;
+  }
+
+  $("#loginBtn").onclick = () => doAuth("login");
+  $("#registerBtn").onclick = () => doAuth("register");
+  for (const id of ["#email", "#password", "#apiKey", "#session"]) {
+    $(id).addEventListener("keydown", (e) => e.key === "Enter" && doAuth("login"));
+  }
+
+  $("#signOut").onclick = () => { state.password = ""; location.reload(); };
+
+  $("#newSessionBtn").onclick = () => {
+    const title = $("#newSession").value.trim();
+    if (!title) return;
+    $("#newSession").value = "";
+    guard(() => ensureThread(title));
+  };
+  $("#newSession").addEventListener("keydown", (e) => e.key === "Enter" && $("#newSessionBtn").click());
+
+  $("#addFolderBtn").onclick = () => $("#folderPicker").click();
+  $("#folderPicker").onchange = (e) => {
+    const files = e.target.files;
+    e.target.value = "";                      // re-picking the same folder must re-fire
+    if (files.length) guard(() => ingest(files));
+  };
+
+  $("#importBtn").onclick = () => {
+    const token = $("#importToken").value.trim();
+    if (!token) return;
+    $("#importToken").value = "";
+    guard(() => importFolder(token));
+  };
+  $("#importToken").addEventListener("keydown", (e) => e.key === "Enter" && $("#importBtn").click());
+
+  $("#forceSearch").onchange = (e) => { state.forceSearch = e.target.checked; savePrefs(); };
+
+  const q = $("#q");
+  const submit = () => {
+    const text = q.value.trim();
+    if (!text || state.busy) return;
+    q.value = "";
+    q.style.height = "auto";
+    guard(() => ask(text));
+  };
+  $("#send").onclick = submit;
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+  });
+  q.addEventListener("input", () => {
+    q.style.height = "auto";
+    q.style.height = `${Math.min(q.scrollHeight, 180)}px`;
+  });
+}
+
+init();
+</script>
+</body>
+</html>
