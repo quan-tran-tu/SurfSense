@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _link_read(link: FolderLink, folder_name: str) -> FolderLinkRead:
+def _link_read(link: FolderLink, folder_name: str, live: bool = True) -> FolderLinkRead:
     return FolderLinkRead(
         id=link.id,
         share_id=link.share_id,
@@ -41,6 +41,7 @@ def _link_read(link: FolderLink, folder_name: str) -> FolderLinkRead:
         created_by_id=link.created_by_id,
         created_at=link.created_at,
         folder_name=folder_name,
+        live=live,
     )
 
 
@@ -112,6 +113,87 @@ async def revoke_folder_share(
         await session.commit()
 
     return {"message": "Share revoked successfully"}
+
+
+@router.get(
+    "/search-spaces/{search_space_id}/folder-links",
+    response_model=list[FolderLinkRead],
+)
+async def list_folder_links(
+    search_space_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Folders imported into this search space. Requires DOCUMENTS_READ.
+
+    Imported folders live in the *sharer's* space, so they appear in neither
+    ``/folders`` nor ``/documents/watched-folders`` for the importer — without this
+    a client has no way to know what it has imported, or to undo it.
+
+    ``live`` reports whether the underlying share still resolves: a revoked or
+    expired share leaves its link in place but stops returning documents, and a
+    client that showed it as healthy would be lying about what is searchable.
+    """
+    await check_permission(
+        session,
+        auth,
+        search_space_id,
+        Permission.DOCUMENTS_READ.value,
+        "You don't have permission to read this search space",
+    )
+
+    rows = (
+        await session.execute(
+            select(FolderLink, Folder.name, SharedFolder)
+            .join(Folder, Folder.id == FolderLink.source_folder_id)
+            .join(SharedFolder, SharedFolder.id == FolderLink.share_id)
+            .filter(FolderLink.target_search_space_id == search_space_id)
+            .order_by(FolderLink.id)
+        )
+    ).all()
+
+    now = datetime.now(UTC)
+    return [
+        _link_read(
+            link,
+            folder_name,
+            live=share.revoked_at is None
+            and (share.expires_at is None or share.expires_at > now),
+        )
+        for link, folder_name, share in rows
+    ]
+
+
+@router.delete("/folder-links/{link_id}")
+async def delete_folder_link(
+    link_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Drop an imported folder from the search space that imported it.
+
+    Removes only the link. The sharer's folder and documents are untouched — this
+    is the importer withdrawing their own copy of the grant, not a deletion — and
+    it can be undone by redeeming the token again.
+
+    Requires DOCUMENTS_DELETE on the *target* space: the link makes content
+    readable there, so removing it is a change to that space's content.
+    """
+    link = await session.get(FolderLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Imported folder not found")
+
+    await check_permission(
+        session,
+        auth,
+        link.target_search_space_id,
+        Permission.DOCUMENTS_DELETE.value,
+        "You don't have permission to remove imported folders from this search space",
+    )
+
+    await session.delete(link)
+    await session.commit()
+    return {"message": "Imported folder removed"}
 
 
 @router.post(

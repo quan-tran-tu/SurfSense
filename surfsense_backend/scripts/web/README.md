@@ -94,8 +94,8 @@ Everything `ask.sh` does, minus the REPL:
 | `--session` / `/switch` | the **Session** list in the sidebar (✕ deletes one) |
 | `/add`, `/reextract` | **+ Add** (a folder picker; re-picking an indexed folder offers a rebuild) |
 | `/folders`, `/rm` | the **Folders** list |
-| `/share`, `/unshare` | **Share** on a folder row; tokens are listed with a **Revoke** button |
-| `/import` | paste a token under **Shares** |
+| `/share`, `/unshare` | **Share** on a folder row; tokens are listed under **Shared by you** with a **Revoke** button |
+| `/import` | paste a token under **Imported** |
 | `FORCE_SEARCH` | the **Force retrieval** checkbox |
 
 **Isolation is unchanged.** Every user gets their own search space named
@@ -127,6 +127,17 @@ then renders as a numbered chip: a chunk id opens a source panel showing the cit
 passage highlighted in a window of surrounding chunks
 (`GET /api/v1/documents/by-chunk/{id}`), a URL links out, and `Esc` closes the
 panel.
+
+**An imported folder is a link, not a copy, and gets its own list.** It lives in the
+*sharer's* search space; you hold a `FolderLink` to it. So it shows up in neither
+`/folders` nor `/documents/watched-folders`, and it cannot appear under **Folders** —
+whose **Share** and **✕** act on folders you own, and neither is yours to do to
+someone else's data (the backend would reject both). Nor does it belong under
+**Shared by you**, which lists tokens *you* minted. It gets a third section,
+**Imported**, listing what you have redeemed; **✕** there drops your link only,
+leaving the owner's documents untouched, and the same token can re-import it. A
+share the owner has revoked or let expire stays listed but is marked `revoked`,
+because the link survives while quietly no longer answering questions.
 
 **A session is a thread id, never a title.** The backend auto-generates a title
 from a thread's first exchange (`title_gen.py`) and overwrites whatever you set.

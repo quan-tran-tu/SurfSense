@@ -82,6 +82,8 @@
   .item .act { opacity: 0; flex: none; }
   .item:hover .act { opacity: 1; }
   .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 2px 8px; }
+  .ro { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .7; }
+  .item .dead { color: var(--warn); font-size: 11px; flex: none; }
   .stack { display: flex; gap: 6px; }
   .stack input { min-width: 0; }
 
@@ -224,12 +226,17 @@
     </section>
 
     <section>
-      <h2>Shares</h2>
-      <div id="shares"></div>
+      <h2>Imported <span class="ro">read-only</span></h2>
+      <div id="imports"></div>
       <div class="stack" style="margin-top:8px">
         <input id="importToken" placeholder="paste a share token…">
         <button id="importBtn" class="sm">Import</button>
       </div>
+    </section>
+
+    <section>
+      <h2>Shared by you</h2>
+      <div id="shares"></div>
     </section>
 
     <section style="margin-top:auto; border-bottom:none">
@@ -800,12 +807,29 @@ async function unshareFolder(token) {
   toast("Revoked. Importers lose access on their next query.", "ok");
 }
 
+/**
+ * An imported folder lives in the *sharer's* search space — we only hold a link to
+ * it. So it appears in neither /folders nor /documents/watched-folders, which is
+ * why it belongs in its own list rather than under Folders (whose Share and Delete
+ * act on folders you own, and neither is yours to do here) or under Shares (tokens
+ * you minted for other people).
+ */
+const listImports = () =>
+  apiJson("GET", `/api/v1/search-spaces/${state.spaceId}/folder-links`);
+
 async function importFolder(token) {
   const { folder_name } = await apiJson("POST", `/api/v1/search-spaces/${state.spaceId}/folder-links`, {
     json: { token },
   });
   toast(`Imported "${folder_name}" — it is searchable now, and readable (read-only) at /documents/_shared/${folder_name}.`, "ok", 10000);
-  await renderFolders();
+  await renderImports();
+}
+
+/** Drops our link. The sharer's folder and documents are untouched. */
+async function removeImport(link) {
+  await api("DELETE", `/api/v1/folder-links/${link.id}`);
+  toast(`Removed "${link.folder_name}" — it is no longer searchable here. The owner's copy is untouched.`);
+  await renderImports();
 }
 
 /* ------------------------------------------------------------------- chat */
@@ -833,6 +857,13 @@ the question is in. Write it as, for example: "Để tôi tìm trong kho tri th�
 This applies only to that narration; the final answer still follows the rule above.
 
 Answer ONLY from passages returned by search_knowledge_base.
+
+Cite as you go. Every sentence that uses a retrieved passage MUST carry that
+passage's bracket label, copied exactly as the retrieved context shows it — e.g. [3],
+or [3][7] when two passages support the same claim. Write the bare label and nothing
+else: no [citation:...], no markdown links, no footnotes, and no "References" or
+"Sources" section at the end. Never invent a label you were not shown, and never
+renumber the ones you were. An uncited answer is a failed answer.
 
 If the search returns nothing relevant, reply with a single short sentence saying the
 knowledge base contains no information on the question, in the user's language. Then stop.
@@ -1210,6 +1241,31 @@ async function renderFolders() {
   }
 }
 
+async function renderImports() {
+  const box = $("#imports");
+  const links = await listImports() ?? [];
+  box.replaceChildren();
+  if (!links.length) { box.innerHTML = '<div class="empty">nothing imported</div>'; return; }
+
+  for (const link of links) {
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = `<span class="name"></span>
+      <span class="dead hide" title="The owner revoked or expired this share, so it no longer answers questions.">revoked</span>
+      <button class="sm act danger" data-a="rm">✕</button>`;
+    row.querySelector(".name").textContent = link.folder_name;
+    // A revoked share leaves the link in place but stops resolving: say so rather
+    // than let it look searchable.
+    row.querySelector(".dead").classList.toggle("hide", link.live !== false);
+    row.querySelector('[data-a="rm"]').onclick = () => {
+      if (confirm(`Remove the imported folder "${link.folder_name}"?\n\nOnly your link is removed — the owner's documents are untouched, and the same token can import it again.`)) {
+        guard(() => removeImport(link));
+      }
+    };
+    box.append(row);
+  }
+}
+
 function renderShares() {
   const box = $("#shares");
   box.replaceChildren();
@@ -1256,6 +1312,7 @@ async function start() {
   await ensureModel();
   await resumeSession();
   await renderFolders();
+  await renderImports();
   renderShares();
   renderContext();
   showApp();

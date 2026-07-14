@@ -46,5 +46,10 @@ class FolderLinkRead(BaseModel):
     created_at: datetime
     # Denormalized for the CLI, which prints it on /import.
     folder_name: str
+    # Whether the underlying share still resolves. A link whose share was revoked
+    # or has expired stays in the table but stops returning documents on the next
+    # query (see folder_sharing_service.linked_folder_ids), so a client that only
+    # listed links would show a dead import as a live one. Always true at creation.
+    live: bool = True
 
     model_config = ConfigDict(from_attributes=True)
