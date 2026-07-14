@@ -134,6 +134,40 @@
   .token { word-break: break-all; font-size: 11px; background: var(--bg); border: 1px solid var(--line);
            border-radius: 4px; padding: 6px; margin: 6px 0; }
   .hide { display: none !important; }
+
+  /* ---- preamble ("Let me search…") demoted out of the answer ---- */
+  details.pre { margin-bottom: 8px; }
+  details.pre summary { cursor: pointer; color: var(--muted); font-size: 12px; font-style: italic; }
+  details.pre .body {
+    margin-top: 6px; padding: 8px 12px; border-left: 2px solid var(--line);
+    color: var(--muted); font-size: 13px; white-space: pre-wrap;
+  }
+
+  /* ---- citations ---- */
+  a.cite {
+    display: inline-block; min-width: 17px; height: 17px; padding: 0 4px; margin: 0 1px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px;
+    color: var(--accent); font-size: 10px; line-height: 15px; text-align: center;
+    text-decoration: none; vertical-align: super; cursor: pointer;
+  }
+  a.cite:hover, a.cite.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+
+  #cite {
+    width: 380px; flex: none; background: var(--panel); border-left: 1px solid var(--line);
+    display: none; flex-direction: column; overflow: hidden;
+  }
+  #cite.on { display: flex; }
+  #cite header {
+    padding: 12px 14px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 8px;
+  }
+  #cite header .t { flex: 1; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+  #cite .body { overflow-y: auto; padding: 12px 14px; }
+  #cite .chunk { font-size: 13px; color: var(--muted); white-space: pre-wrap; margin-bottom: 14px; overflow-wrap: anywhere; }
+  #cite .chunk.hit {
+    color: var(--fg); background: var(--panel-2); border-left: 2px solid var(--accent);
+    border-radius: 0 6px 6px 0; padding: 8px 12px;
+  }
 </style>
 </head>
 <body>
@@ -234,6 +268,14 @@
       </div>
     </footer>
   </main>
+
+  <aside id="cite">
+    <header>
+      <span class="t" id="citeTitle"></span>
+      <button id="citeClose" class="sm">✕</button>
+    </header>
+    <div class="body" id="citeBody"></div>
+  </aside>
 </div>
 
 <div id="toasts"></div>
@@ -465,17 +507,37 @@ function messageText(content) {
   return "";
 }
 
+/**
+ * Split a stored assistant message into { answer, preamble } on the same rule the
+ * live stream uses: the backend starts a fresh text part after every tool call
+ * (tasks/chat/content_builder.py), so the last non-empty text part is the answer
+ * and anything before it is the model narrating its way there.
+ */
+function splitAssistant(content) {
+  const blocks = Array.isArray(content)
+    ? content.filter((p) => p?.type === "text" && typeof p.text === "string")
+             .map((p) => p.text).filter((t) => t.trim())
+    : [messageText(content)].filter((t) => t.trim());
+
+  return { answer: blocks.pop() ?? "", preamble: blocks };
+}
+
 /** Questions go to the backend wrapped in the force-retrieval directive; show only what the user typed. */
 const unwrapQuestion = (text) => text.match(/<question>\n([\s\S]*?)\n<\/question>/)?.[1] ?? text;
 
 async function loadHistory() {
+  closeCitation();
   $("#msgs").replaceChildren();
   const history = await apiJson("GET", `/api/v1/threads/${state.threadId}`);
   for (const m of history?.messages ?? []) {
-    const text = messageText(m.content);
-    if (!text.trim()) continue;
-    if (m.role === "user") addMessage("user", unwrapQuestion(text));
-    else if (m.role === "assistant") addMessage("assistant", text);
+    if (m.role === "user") {
+      const text = messageText(m.content);
+      if (text.trim()) addMessage("user", unwrapQuestion(text));
+    } else if (m.role === "assistant") {
+      const { answer, preamble } = splitAssistant(m.content);
+      if (!answer.trim()) continue;
+      addMessage("assistant", answer).setPreamble(preamble);
+    }
   }
   scrollDown();
 }
@@ -695,14 +757,48 @@ ${q}
 </question>`;
 }
 
+/**
+ * Accumulates the turn's text blocks as they stream.
+ *
+ * The stream carries text as text-start / text-delta / text-end triples keyed by a
+ * text id, and the agent opens a fresh block after each tool call. So a turn is a
+ * *sequence* of blocks: the model's "Let me search the knowledge base…" preamble,
+ * then the real answer. Only the last non-empty block is the answer — the rest are
+ * demoted to the collapsed preamble the moment a new block starts. This is the
+ * same rule splitAssistant() applies to a reloaded thread, because the backend
+ * persists one text part per block.
+ */
+function textBlocks() {
+  const blocks = [];
+  const current = (id) => {
+    const cur = blocks[blocks.length - 1];
+    if (!cur || (id !== undefined && cur.id !== id)) blocks.push({ id, text: "" });
+    return blocks[blocks.length - 1];
+  };
+  const kept = () => blocks.filter((b) => b.text.trim());
+
+  return {
+    start: (id) => current(id),
+    delta: (id, delta) => { current(id).text += delta; },
+    answer: () => kept().pop()?.text ?? "",
+    preamble: () => kept().slice(0, -1).map((b) => b.text),
+  };
+}
+
 async function ask(question) {
   if (state.busy) return;
   state.busy = true;
   $("#send").disabled = true;
 
   addMessage("user", question);
-  const { bubble, setStatus } = addMessage("assistant", "", true);
-  let answer = "";
+  const { bubble, setStatus, setPreamble } = addMessage("assistant", "", true);
+
+  const blocks = textBlocks();
+  const paint = () => {
+    bubble.innerHTML = renderMarkdown(blocks.answer());
+    setPreamble(blocks.preamble());
+    scrollDown();
+  };
 
   try {
     const res = await api("POST", "/api/v1/new_chat", {
@@ -737,17 +833,18 @@ async function ask(question) {
         let ev;
         try { ev = JSON.parse(payload); } catch { continue; }
 
-        if (ev.type === "text-delta" && typeof ev.delta === "string") {
-          answer += ev.delta;
-          bubble.innerHTML = renderMarkdown(answer);
-          scrollDown();
-        } else if (!answer && typeof ev.type === "string") {
+        if (ev.type === "text-start") {
+          blocks.start(ev.id);
+        } else if (ev.type === "text-delta" && typeof ev.delta === "string") {
+          blocks.delta(ev.id, ev.delta);
+          paint();
+        } else if (!blocks.answer() && typeof ev.type === "string") {
           setStatus(describeEvent(ev));   // surfaces whether it actually searched
         }
       }
     }
 
-    if (!answer) {
+    if (!blocks.answer()) {
       setStatus("The stream carried no answer. Usually: the model errored before " +
                 "replying, or the chat role isn't wired to a working key.", "err");
     } else {
@@ -781,6 +878,30 @@ const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 /**
+ * The agent emits sources as [citation:<payload>], where the payload is either a
+ * chunk id (shared/citations/markers.py) or a URL. Turn each into a numbered
+ * chip: chunk ids open the source panel, URLs just link out.
+ *
+ * Returns a fresh replacer per render so numbering restarts at [1] for each
+ * message and stays stable as the answer streams in.
+ */
+function citeChip() {
+  const ordinals = new Map();
+  return (_, payload) => {
+    const key = payload.trim();
+    if (!ordinals.has(key)) ordinals.set(key, ordinals.size + 1);
+    const n = ordinals.get(key);
+
+    // The text was HTML-escaped before this ran, so `key` is safe in an
+    // attribute; it also means a URL's "&" arrives here as "&amp;".
+    if (/^https?:/i.test(key.replace(/&amp;/g, "&"))) {
+      return `<a class="cite" href="${key}" target="_blank" rel="noopener" title="${key}">${n}</a>`;
+    }
+    return `<a class="cite" data-cite="${key}" title="Show source ${n}">${n}</a>`;
+  };
+}
+
+/**
  * Just enough Markdown for an LLM answer - no dependency, no CDN, no build.
  * Everything is HTML-escaped up front, so the tags below are the only ones that
  * can reach the DOM: a model that emits <script> gets it shown as text.
@@ -795,6 +916,7 @@ function renderMarkdown(src) {
   });
 
   text = text
+    .replace(/\[citation:([^\]]+)\]/g, citeChip())
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
@@ -814,6 +936,45 @@ function renderMarkdown(src) {
 }
 const scrollDown = () => { const m = $("#msgs"); m.scrollTop = m.scrollHeight; };
 
+/* --------------------------------------------------------- citation panel */
+
+function closeCitation() {
+  $("#cite").classList.remove("on");
+  document.querySelectorAll("a.cite.on").forEach((a) => a.classList.remove("on"));
+}
+
+/**
+ * Resolve a cited chunk id to the document it came from, and show the passage in
+ * context — a window of chunks either side, with the cited one highlighted.
+ */
+async function openCitation(chunkId, chip) {
+  document.querySelectorAll("a.cite.on").forEach((a) => a.classList.remove("on"));
+  chip?.classList.add("on");
+
+  const panel = $("#cite"), title = $("#citeTitle"), body = $("#citeBody");
+  panel.classList.add("on");
+  title.textContent = `Source ${chip?.textContent ?? ""}`;
+  body.textContent = "Loading…";
+
+  try {
+    const doc = await apiJson("GET", `/api/v1/documents/by-chunk/${chunkId}?chunk_window=3`);
+    title.textContent = doc.title || `Document #${doc.id}`;
+
+    body.replaceChildren();
+    for (const chunk of doc.chunks ?? []) {
+      const div = document.createElement("div");
+      div.className = "chunk" + (chunk.id === Number(chunkId) ? " hit" : "");
+      div.textContent = chunk.content;
+      body.append(div);
+    }
+    body.querySelector(".hit")?.scrollIntoView({ block: "center" });
+  } catch (e) {
+    body.textContent = e.status === 404
+      ? `That passage is gone — chunk ${chunkId} no longer exists (the document was probably re-indexed or deleted).`
+      : `Could not load the source: ${e.message}`;
+  }
+}
+
 function addMessage(role, text, streaming = false) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
@@ -821,6 +982,13 @@ function addMessage(role, text, streaming = false) {
   const who = document.createElement("div");
   who.className = "who";
   who.textContent = role === "user" ? "You" : state.model;
+
+  // Anything the model said before its final text block ("Let me search the
+  // knowledge base…") is not the answer. It is collapsed in here rather than
+  // thrown away, so a block that turns out to be substance is still reachable.
+  const pre = document.createElement("details");
+  pre.className = "pre hide";
+  pre.innerHTML = '<summary></summary><div class="body"></div>';
 
   const bubble = document.createElement("div");
   bubble.className = "bubble" + (streaming ? " cursor" : "");
@@ -830,7 +998,7 @@ function addMessage(role, text, streaming = false) {
   const status = document.createElement("div");
   status.className = "status";
 
-  wrap.append(who, bubble, status);
+  wrap.append(who, pre, bubble, status);
   $("#msgs").append(wrap);
   scrollDown();
 
@@ -838,7 +1006,15 @@ function addMessage(role, text, streaming = false) {
     status.textContent = msg ?? "";
     status.className = `status ${kind}`;
   };
-  return { bubble, setStatus };
+  const setPreamble = (blocks) => {
+    const kept = blocks.filter((b) => b.trim());
+    pre.classList.toggle("hide", kept.length === 0);
+    if (!kept.length) return;
+    pre.querySelector("summary").textContent =
+      `the model's earlier output (${kept.length} block${kept.length > 1 ? "s" : ""})`;
+    pre.querySelector(".body").textContent = kept.join("\n\n");
+  };
+  return { bubble, setStatus, setPreamble };
 }
 
 async function renderSessions() {
@@ -850,11 +1026,31 @@ async function renderSessions() {
   for (const t of threads) {
     const row = document.createElement("div");
     row.className = "item" + (t.id === state.threadId ? " active" : "");
-    row.innerHTML = `<span class="name"></span>`;
+    row.innerHTML = `<span class="name"></span><button class="sm act danger" data-a="rm">✕</button>`;
     row.querySelector(".name").textContent = t.title;
     row.onclick = () => t.id !== state.threadId && guard(() => ensureThread(t.title));
+    row.querySelector('[data-a="rm"]').onclick = (e) => {
+      e.stopPropagation();                       // don't switch to the thread we're deleting
+      if (confirm(`Delete session "${t.title}" and all of its messages?`)) {
+        guard(() => deleteSession(t));
+      }
+    };
     box.append(row);
   }
+}
+
+/**
+ * Deleting the session you're in leaves nowhere to be, so land somewhere sane:
+ * the newest surviving thread, or a fresh one if that was the last.
+ */
+async function deleteSession(thread) {
+  await api("DELETE", `/api/v1/threads/${thread.id}`);
+  toast(`Deleted session "${thread.title}".`);
+
+  if (thread.id !== state.threadId) { await renderSessions(); return; }
+
+  const left = await listThreads();
+  await ensureThread(left[0]?.title ?? "research");
 }
 
 async function renderFolders() {
@@ -1032,6 +1228,17 @@ function init() {
   $("#importToken").addEventListener("keydown", (e) => e.key === "Enter" && $("#importBtn").click());
 
   $("#forceSearch").onchange = (e) => { state.forceSearch = e.target.checked; savePrefs(); };
+
+  // Citation chips are re-created on every repaint of a streaming answer, so the
+  // listener lives on the container instead of the chips.
+  $("#msgs").addEventListener("click", (e) => {
+    const chip = e.target.closest("a.cite[data-cite]");
+    if (!chip) return;
+    e.preventDefault();
+    guard(() => openCitation(chip.dataset.cite, chip));
+  });
+  $("#citeClose").onclick = closeCitation;
+  document.addEventListener("keydown", (e) => e.key === "Escape" && closeCitation());
 
   const q = $("#q");
   const submit = () => {

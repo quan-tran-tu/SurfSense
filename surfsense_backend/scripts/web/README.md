@@ -91,7 +91,7 @@ Everything `ask.sh` does, minus the REPL:
 | login + cookie jar | **Sign in** (the cookie is httpOnly, set by the backend) |
 | `ensure_space` | automatic — your private space is `cli:<email>` |
 | `ensure_model` | automatic — model connection + chat role, from the API key |
-| `--session` / `/switch` | the **Session** list in the sidebar |
+| `--session` / `/switch` | the **Session** list in the sidebar (✕ deletes one) |
 | `/add`, `/reextract` | **+ Add** (a folder picker; re-picking an indexed folder offers a rebuild) |
 | `/folders`, `/rm` | the **Folders** list |
 | `/share`, `/unshare` | **Share** on a folder row; tokens are listed with a **Revoke** button |
@@ -103,6 +103,26 @@ Everything `ask.sh` does, minus the REPL:
 boundary, so user A can never see or delete user B's documents. This client
 never lets you name a space by id. Because the space name matches, `ask.sh` and
 this page share one knowledge base — ingest from the CLI, ask from the browser.
+
+## Answers, preambles and citations
+
+**Only the model's last text block is shown as the answer.** A turn streams as a
+sequence of text blocks (`text-start` / `text-delta` / `text-end`), and the agent
+opens a fresh one after every tool call — so a typical turn is "Let me search the
+knowledge base…", then the tool call, then the real answer. The moment a second
+block starts producing text, the earlier one is demoted into a collapsed *"the
+model's earlier output"* disclosure above the answer. It is not discarded: if a
+block that looked like a preamble was actually substance, it is one click away.
+Reloading a thread applies the identical rule, because the backend persists one
+text part per block (`tasks/chat/content_builder.py`).
+
+**Citations are clickable.** The agent emits sources as `[citation:<payload>]`,
+where the payload is either a chunk id or a URL
+(`shared/citations/markers.py`). Each becomes a small numbered chip: a chunk id
+opens a source panel on the right showing the cited passage highlighted, with a
+window of surrounding chunks for context (`GET /api/v1/documents/by-chunk/{id}`);
+a URL just links out. Repeats of the same source reuse the same number. `Esc`
+closes the panel.
 
 ## Things worth knowing
 
