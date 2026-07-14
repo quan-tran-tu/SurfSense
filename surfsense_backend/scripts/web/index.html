@@ -1,6 +1,6 @@
 <!doctype html>
 <!--
-  SurfSense mini — a single-file web client for a self-hosted SurfSense backend.
+  OSINT — a single-file web client for a self-hosted SurfSense backend.
 
   This is ask.sh in a browser. Same contract, same isolation model: every user gets
   their own search space named "cli:<email>", which is the backend's real,
@@ -21,7 +21,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SurfSense</title>
+<title>OSINT</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #161922; --panel-2: #1c202b; --line: #272c39;
@@ -135,14 +135,6 @@
            border-radius: 4px; padding: 6px; margin: 6px 0; }
   .hide { display: none !important; }
 
-  /* ---- preamble ("Let me search…") demoted out of the answer ---- */
-  details.pre { margin-bottom: 8px; }
-  details.pre summary { cursor: pointer; color: var(--muted); font-size: 12px; font-style: italic; }
-  details.pre .body {
-    margin-top: 6px; padding: 8px 12px; border-left: 2px solid var(--line);
-    color: var(--muted); font-size: 13px; white-space: pre-wrap;
-  }
-
   /* ---- citations ---- */
   a.cite {
     display: inline-block; min-width: 17px; height: 17px; padding: 0 4px; margin: 0 1px;
@@ -174,7 +166,7 @@
 
 <!-- ============================ auth ============================ -->
 <div id="auth">
-  <h1>SurfSense</h1>
+  <h1>OSINT</h1>
   <div class="sub">A private knowledge base you can ask questions.</div>
   <div id="originWarn" class="toast err hide" style="max-width:none;margin-bottom:12px"></div>
 
@@ -188,9 +180,6 @@
     <label for="apiKey">DeepSeek API key <span title="Wires the chat model to your user. Stored server-side on a model connection scoped to your search space.">ⓘ</span></label>
     <input id="apiKey" type="password" placeholder="sk-...">
   </div>
-
-  <label for="session">Session</label>
-  <input id="session" placeholder="research">
 
   <details class="adv">
     <summary>Advanced</summary>
@@ -300,8 +289,8 @@ const state = {
   backend: "http://localhost:8000",
   email: "", password: "", apiKey: "",
   model: "deepseek-chat", modelBase: "https://api.deepseek.com/v1",
-  session: "research", forceSearch: true,
-  spaceId: null, threadId: null,
+  forceSearch: true,
+  spaceId: null, threadId: null, threadTitle: "",
   relogged: false, busy: false,
   shares: [],       // [{path, token}] — the backend has no list endpoint, so we remember
 };
@@ -310,7 +299,8 @@ function savePrefs() {
   localStorage.setItem(LS, JSON.stringify({
     backend: state.backend, email: state.email,
     apiKey: INJECTED_KEY ? "" : state.apiKey,
-    model: state.model, modelBase: state.modelBase, session: state.session,
+    model: state.model, modelBase: state.modelBase,
+    threadId: state.threadId, threadTitle: state.threadTitle,
     forceSearch: state.forceSearch, shares: state.shares,
   }));
 }
@@ -480,17 +470,37 @@ const listThreads = async () => {
   return r?.threads ?? r?.items ?? (Array.isArray(r) ? r : []);
 };
 
-/** Resume the thread titled `title`, or start one. A session is just a thread title. */
-async function ensureThread(title) {
-  const found = (await listThreads()).find((t) => t.title === title);
-  const thread = found ?? await apiJson("POST", "/api/v1/threads", {
-    json: { search_space_id: state.spaceId, title },
-  });
-  state.session = title;
+/**
+ * Open a thread by id.
+ *
+ * A session is a thread *id*, never a title. Titles are not stable: the backend
+ * auto-generates one from the first exchange (title_gen.py) and overwrites
+ * whatever we set. Looking a session up by title therefore misses the renamed
+ * thread and silently forks a new empty one, stranding the conversation under a
+ * name the user never chose. keepTitle() puts our name back, but the id is what
+ * we navigate by.
+ */
+async function openThread(thread) {
   state.threadId = thread.id;
+  state.threadTitle = thread.title;
   savePrefs();
   await Promise.all([renderSessions(), loadHistory()]);
   renderContext();
+}
+
+async function createSession(title) {
+  const thread = await apiJson("POST", "/api/v1/threads", {
+    json: { search_space_id: state.spaceId, title },
+  });
+  await openThread(thread);
+}
+
+/** Resume the last thread we were in; fall back to the newest, else start one. */
+async function resumeSession() {
+  const threads = await listThreads();
+  const mine = threads.find((t) => t.id === state.threadId) ?? threads[0];
+  if (mine) await openThread(mine);
+  else await createSession("research");
 }
 
 /**
@@ -508,18 +518,19 @@ function messageText(content) {
 }
 
 /**
- * Split a stored assistant message into { answer, preamble } on the same rule the
- * live stream uses: the backend starts a fresh text part after every tool call
- * (tasks/chat/content_builder.py), so the last non-empty text part is the answer
- * and anything before it is the model narrating its way there.
+ * The answer inside a stored assistant message, on the same rule the live stream
+ * uses: the backend starts a fresh text part after every tool call
+ * (tasks/chat/content_builder.py), so the last non-empty text part is the answer.
+ * Everything before it is the model narrating its way there ("Let me search the
+ * knowledge base…") and is dropped.
  */
-function splitAssistant(content) {
+function assistantAnswer(content) {
   const blocks = Array.isArray(content)
     ? content.filter((p) => p?.type === "text" && typeof p.text === "string")
              .map((p) => p.text).filter((t) => t.trim())
     : [messageText(content)].filter((t) => t.trim());
 
-  return { answer: blocks.pop() ?? "", preamble: blocks };
+  return blocks.pop() ?? "";
 }
 
 /** Questions go to the backend wrapped in the force-retrieval directive; show only what the user typed. */
@@ -534,9 +545,8 @@ async function loadHistory() {
       const text = messageText(m.content);
       if (text.trim()) addMessage("user", unwrapQuestion(text));
     } else if (m.role === "assistant") {
-      const { answer, preamble } = splitAssistant(m.content);
-      if (!answer.trim()) continue;
-      addMessage("assistant", answer).setPreamble(preamble);
+      const answer = assistantAnswer(m.content);
+      if (answer.trim()) addMessage("assistant", answer);
     }
   }
   scrollDown();
@@ -763,10 +773,10 @@ ${q}
  * The stream carries text as text-start / text-delta / text-end triples keyed by a
  * text id, and the agent opens a fresh block after each tool call. So a turn is a
  * *sequence* of blocks: the model's "Let me search the knowledge base…" preamble,
- * then the real answer. Only the last non-empty block is the answer — the rest are
- * demoted to the collapsed preamble the moment a new block starts. This is the
- * same rule splitAssistant() applies to a reloaded thread, because the backend
- * persists one text part per block.
+ * then the real answer. Only the last non-empty block is shown; the moment a new
+ * block produces text it replaces what came before. This is the same rule
+ * assistantAnswer() applies to a reloaded thread, because the backend persists one
+ * text part per block.
  */
 function textBlocks() {
   const blocks = [];
@@ -775,13 +785,13 @@ function textBlocks() {
     if (!cur || (id !== undefined && cur.id !== id)) blocks.push({ id, text: "" });
     return blocks[blocks.length - 1];
   };
-  const kept = () => blocks.filter((b) => b.text.trim());
 
   return {
     start: (id) => current(id),
     delta: (id, delta) => { current(id).text += delta; },
-    answer: () => kept().pop()?.text ?? "",
-    preamble: () => kept().slice(0, -1).map((b) => b.text),
+    // An empty block counts for nothing: text-start fires before the first token,
+    // and treating it as the answer would blank the bubble until that token lands.
+    answer: () => blocks.filter((b) => b.text.trim()).pop()?.text ?? "",
   };
 }
 
@@ -791,12 +801,11 @@ async function ask(question) {
   $("#send").disabled = true;
 
   addMessage("user", question);
-  const { bubble, setStatus, setPreamble } = addMessage("assistant", "", true);
+  const { bubble, setStatus } = addMessage("assistant", "", true);
 
   const blocks = textBlocks();
   const paint = () => {
     bubble.innerHTML = renderMarkdown(blocks.answer());
-    setPreamble(blocks.preamble());
     scrollDown();
   };
 
@@ -849,6 +858,7 @@ async function ask(question) {
                 "replying, or the chat role isn't wired to a working key.", "err");
     } else {
       setStatus(null);
+      await settleAnswer(bubble, blocks.answer());
     }
   } catch (e) {
     setStatus(e.message, "err");
@@ -857,7 +867,56 @@ async function ask(question) {
     state.busy = false;
     $("#send").disabled = false;
     $("#q").focus();
+    // The first reply in a thread gets auto-titled server-side; keep our name.
+    guard(keepTitle);
   }
+}
+
+/**
+ * Re-render the finished answer from the *persisted* message.
+ *
+ * The model cites with bare ordinals — [1], [2] — and the mapping from ordinal to
+ * source lives in a server-side registry. The backend rewrites them into
+ * [citation:<chunk id>] markers in assistant_finalize.py, which runs when the turn
+ * is persisted, i.e. NOT on the live stream. So what streams to us has unclickable
+ * [1]s in it, and only the stored copy has real citations. Swap it in once it lands.
+ *
+ * Persistence happens in the stream's `finally`, so it can trail the last byte we
+ * read by a moment: retry once before giving up.
+ */
+async function settleAnswer(bubble, streamed) {
+  const hasOrdinals = /\[\s*\d+\s*\]/.test(streamed);
+
+  for (const wait of [0, 700]) {
+    if (wait) await sleep(wait);
+
+    const history = await apiJson("GET", `/api/v1/threads/${state.threadId}`);
+    const last = (history?.messages ?? []).filter((m) => m.role === "assistant").pop();
+    const stored = last ? assistantAnswer(last.content) : "";
+    if (!stored.trim()) continue;
+
+    // Only accept the stored copy once it is actually normalized — otherwise we
+    // would repaint the same bare [1]s and pointlessly lose nothing but time.
+    const settled = !hasOrdinals || stored.includes("[citation:") || !/\[\s*\d+\s*\]/.test(stored);
+    if (settled || wait) {
+      bubble.innerHTML = renderMarkdown(stored);
+      scrollDown();
+      return;
+    }
+  }
+}
+
+/**
+ * The backend auto-titles a thread from its first exchange (title_gen.py), which
+ * would silently rename the session the user named. Put our name back.
+ */
+async function keepTitle() {
+  if (!state.threadTitle) return;
+  const mine = (await listThreads()).find((t) => t.id === state.threadId);
+  if (mine && mine.title !== state.threadTitle) {
+    await api("PUT", `/api/v1/threads/${state.threadId}`, { json: { title: state.threadTitle } });
+  }
+  await renderSessions();
 }
 
 /** Human-readable label for the pre-answer events, so a silent run is diagnosable. */
@@ -983,13 +1042,6 @@ function addMessage(role, text, streaming = false) {
   who.className = "who";
   who.textContent = role === "user" ? "You" : state.model;
 
-  // Anything the model said before its final text block ("Let me search the
-  // knowledge base…") is not the answer. It is collapsed in here rather than
-  // thrown away, so a block that turns out to be substance is still reachable.
-  const pre = document.createElement("details");
-  pre.className = "pre hide";
-  pre.innerHTML = '<summary></summary><div class="body"></div>';
-
   const bubble = document.createElement("div");
   bubble.className = "bubble" + (streaming ? " cursor" : "");
   if (role === "user") bubble.textContent = text;
@@ -998,7 +1050,7 @@ function addMessage(role, text, streaming = false) {
   const status = document.createElement("div");
   status.className = "status";
 
-  wrap.append(who, pre, bubble, status);
+  wrap.append(who, bubble, status);
   $("#msgs").append(wrap);
   scrollDown();
 
@@ -1006,15 +1058,7 @@ function addMessage(role, text, streaming = false) {
     status.textContent = msg ?? "";
     status.className = `status ${kind}`;
   };
-  const setPreamble = (blocks) => {
-    const kept = blocks.filter((b) => b.trim());
-    pre.classList.toggle("hide", kept.length === 0);
-    if (!kept.length) return;
-    pre.querySelector("summary").textContent =
-      `the model's earlier output (${kept.length} block${kept.length > 1 ? "s" : ""})`;
-    pre.querySelector(".body").textContent = kept.join("\n\n");
-  };
-  return { bubble, setStatus, setPreamble };
+  return { bubble, setStatus };
 }
 
 async function renderSessions() {
@@ -1028,7 +1072,7 @@ async function renderSessions() {
     row.className = "item" + (t.id === state.threadId ? " active" : "");
     row.innerHTML = `<span class="name"></span><button class="sm act danger" data-a="rm">✕</button>`;
     row.querySelector(".name").textContent = t.title;
-    row.onclick = () => t.id !== state.threadId && guard(() => ensureThread(t.title));
+    row.onclick = () => t.id !== state.threadId && guard(() => openThread(t));
     row.querySelector('[data-a="rm"]').onclick = (e) => {
       e.stopPropagation();                       // don't switch to the thread we're deleting
       if (confirm(`Delete session "${t.title}" and all of its messages?`)) {
@@ -1047,10 +1091,8 @@ async function deleteSession(thread) {
   await api("DELETE", `/api/v1/threads/${thread.id}`);
   toast(`Deleted session "${thread.title}".`);
 
-  if (thread.id !== state.threadId) { await renderSessions(); return; }
-
-  const left = await listThreads();
-  await ensureThread(left[0]?.title ?? "research");
+  if (thread.id === state.threadId) state.threadId = null;
+  await resumeSession();
 }
 
 async function renderFolders() {
@@ -1120,7 +1162,7 @@ function showApp() {
 async function start() {
   await ensureSpace();
   await ensureModel();
-  await ensureThread(state.session);
+  await resumeSession();
   await renderFolders();
   renderShares();
   renderContext();
@@ -1131,13 +1173,12 @@ async function doAuth(mode) {
   const email = $("#email").value.trim();
   const password = $("#password").value;
   const apiKey = INJECTED_KEY || $("#apiKey").value.trim();
-  const session = $("#session").value.trim() || "research";
 
   if (!email || !password) { $("#authMsg").textContent = "Email and password are required."; return; }
   if (!apiKey) { $("#authMsg").textContent = "The API key is required — it wires the chat model to your user."; return; }
 
   Object.assign(state, {
-    email, password, apiKey, session,
+    email, password, apiKey,
     backend: ($("#backend").value.trim() || "http://localhost:8000").replace(/\/$/, ""),
     model: $("#model").value.trim() || "deepseek-chat",
     modelBase: $("#modelBase").value.trim() || "https://api.deepseek.com/v1",
@@ -1170,7 +1211,6 @@ function init() {
   $("#apiKey").value = state.apiKey;
   $("#model").value = state.model;
   $("#modelBase").value = state.modelBase;
-  $("#session").value = state.session;
   $("#forceSearch").checked = state.forceSearch;
 
   // The key came from the server, so don't ask for it (and don't show it).
@@ -1198,7 +1238,7 @@ function init() {
 
   $("#loginBtn").onclick = () => doAuth("login");
   $("#registerBtn").onclick = () => doAuth("register");
-  for (const id of ["#email", "#password", "#apiKey", "#session"]) {
+  for (const id of ["#email", "#password", "#apiKey"]) {
     $(id).addEventListener("keydown", (e) => e.key === "Enter" && doAuth("login"));
   }
 
@@ -1208,7 +1248,7 @@ function init() {
     const title = $("#newSession").value.trim();
     if (!title) return;
     $("#newSession").value = "";
-    guard(() => ensureThread(title));
+    guard(() => createSession(title));
   };
   $("#newSession").addEventListener("keydown", (e) => e.key === "Enter" && $("#newSessionBtn").click());
 

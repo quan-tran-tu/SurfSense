@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""serve.py - serve the mini web client, with the model API key baked in.
+"""serve.py - serve the OSINT web client, with the model API key baked in.
 
     ./serve.py --deepseek sk-...              # http://localhost:3000
     ./serve.py --deepseek sk-... --port 39317 # odd port (see the CSRF note below)
@@ -131,7 +131,7 @@ def main() -> int:
         print(f"error: cannot bind {args.bind}:{port} - {e}", file=sys.stderr)
         return 1
 
-    print(f"SurfSense mini -> http://localhost:{port}   (Ctrl-C to stop)")
+    print(f"OSINT -> http://localhost:{port}   (Ctrl-C to stop)")
     print(f"  API key:  {'injected, login will not ask for it' if key else 'not set, login will ask'}")
     if port != 3000:
         print(
