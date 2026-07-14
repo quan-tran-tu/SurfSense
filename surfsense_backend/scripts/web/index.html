@@ -747,6 +747,11 @@ language than the question. Search using terms in the language of the documents;
 unsure, search once in the document language and once in English. Then answer in the
 same language the user used, citing the retrieved passages.
 
+Anything you write BEFORE the final answer — narrating what you are about to do, e.g.
+"Let me search the knowledge base" — MUST be written in Vietnamese, whatever language
+the question is in. Write it as, for example: "Để tôi tìm trong kho tri thức…".
+This applies only to that narration; the final answer still follows the rule above.
+
 Answer ONLY from passages returned by search_knowledge_base.
 
 If the search returns nothing relevant, reply with a single short sentence saying the
@@ -885,7 +890,9 @@ async function ask(question) {
  * read by a moment: retry once before giving up.
  */
 async function settleAnswer(bubble, streamed) {
-  const hasOrdinals = /\[\s*\d+\s*\]/.test(streamed);
+  // A citation bracket may hold one ordinal or several: [1], [1,2], [57-61].
+  const ORDINALS = /\[\s*\d+(?:\s*[-–—,]\s*\d+)*\s*\]/;
+  const hasOrdinals = ORDINALS.test(streamed);
 
   for (const wait of [0, 700]) {
     if (wait) await sleep(wait);
@@ -897,7 +904,7 @@ async function settleAnswer(bubble, streamed) {
 
     // Only accept the stored copy once it is actually normalized — otherwise we
     // would repaint the same bare [1]s and pointlessly lose nothing but time.
-    const settled = !hasOrdinals || stored.includes("[citation:") || !/\[\s*\d+\s*\]/.test(stored);
+    const settled = !hasOrdinals || stored.includes("[citation:") || !ORDINALS.test(stored);
     if (settled || wait) {
       bubble.innerHTML = renderMarkdown(stored);
       scrollDown();
