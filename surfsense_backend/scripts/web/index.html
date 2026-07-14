@@ -150,8 +150,10 @@
   <label for="password">Password</label>
   <input id="password" type="password" autocomplete="current-password" placeholder="min. 8 characters">
 
-  <label for="apiKey">DeepSeek API key <span title="Wires the chat model to your user. Stored server-side on a model connection scoped to your search space.">ⓘ</span></label>
-  <input id="apiKey" type="password" placeholder="sk-...">
+  <div id="apiKeyRow">
+    <label for="apiKey">DeepSeek API key <span title="Wires the chat model to your user. Stored server-side on a model connection scoped to your search space.">ⓘ</span></label>
+    <input id="apiKey" type="password" placeholder="sk-...">
+  </div>
 
   <label for="session">Session</label>
   <input id="session" placeholder="research">
@@ -244,6 +246,14 @@
 const $ = (sel) => document.querySelector(sel);
 const LS = "surfsense.mini";
 
+// serve.py --deepseek <key> rewrites the marker below into an assignment. Under a
+// plain static server it stays a comment, and the login screen asks for the key.
+// An injected key is deliberately NOT written to localStorage: it lives only in
+// the page that served it.
+window.SS_CONFIG = window.SS_CONFIG || {};
+/*__SS_CONFIG__*/
+const INJECTED_KEY = window.SS_CONFIG.apiKey || "";
+
 const state = {
   backend: "http://localhost:8000",
   email: "", password: "", apiKey: "",
@@ -256,13 +266,15 @@ const state = {
 
 function savePrefs() {
   localStorage.setItem(LS, JSON.stringify({
-    backend: state.backend, email: state.email, apiKey: state.apiKey,
+    backend: state.backend, email: state.email,
+    apiKey: INJECTED_KEY ? "" : state.apiKey,
     model: state.model, modelBase: state.modelBase, session: state.session,
     forceSearch: state.forceSearch, shares: state.shares,
   }));
 }
 function loadPrefs() {
   try { Object.assign(state, JSON.parse(localStorage.getItem(LS) || "{}")); } catch {}
+  if (INJECTED_KEY) state.apiKey = INJECTED_KEY;   // the served key always wins
 }
 
 function toast(msg, kind = "ok", ms = 6000) {
@@ -922,7 +934,7 @@ async function start() {
 async function doAuth(mode) {
   const email = $("#email").value.trim();
   const password = $("#password").value;
-  const apiKey = $("#apiKey").value.trim();
+  const apiKey = INJECTED_KEY || $("#apiKey").value.trim();
   const session = $("#session").value.trim() || "research";
 
   if (!email || !password) { $("#authMsg").textContent = "Email and password are required."; return; }
@@ -964,6 +976,9 @@ function init() {
   $("#modelBase").value = state.modelBase;
   $("#session").value = state.session;
   $("#forceSearch").checked = state.forceSearch;
+
+  // The key came from the server, so don't ask for it (and don't show it).
+  if (INJECTED_KEY) $("#apiKeyRow").classList.add("hide");
 
   // Origin is the whole ballgame: the backend's CSRF middleware only accepts an
   // allow-listed one, and file:// sends "null". Fail loudly rather than let every
