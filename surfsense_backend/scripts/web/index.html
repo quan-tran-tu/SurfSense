@@ -295,17 +295,59 @@ const state = {
   shares: [],       // [{path, token}] — the backend has no list endpoint, so we remember
 };
 
+const readPrefs = () => {
+  try { return JSON.parse(localStorage.getItem(LS) || "{}"); } catch { return {}; }
+};
+
+/**
+ * Preferences are shared by everyone using this browser, but per-user state must
+ * not be: a share token is a capability — anyone holding it can import that folder
+ * — and a thread id belongs to one user's search space. Keeping either at the top
+ * level handed the previous user's shares and session to whoever signed in next.
+ * So they live under byUser[email], and signing in adopts only that user's slice.
+ */
 function savePrefs() {
+  const prefs = readPrefs();
+  const byUser = prefs.byUser ?? {};
+  if (state.email) {
+    byUser[state.email] = {
+      shares: state.shares,
+      threadId: state.threadId,
+      threadTitle: state.threadTitle,
+    };
+  }
   localStorage.setItem(LS, JSON.stringify({
     backend: state.backend, email: state.email,
     apiKey: INJECTED_KEY ? "" : state.apiKey,
     model: state.model, modelBase: state.modelBase,
-    threadId: state.threadId, threadTitle: state.threadTitle,
-    forceSearch: state.forceSearch, shares: state.shares,
+    forceSearch: state.forceSearch,
+    byUser,
   }));
 }
+
+/** Load the shared prefs, then whatever belongs to `email` (nothing, if new). */
+function adoptUser(email) {
+  const mine = readPrefs().byUser?.[email] ?? {};
+  state.shares = mine.shares ?? [];
+  state.threadId = mine.threadId ?? null;
+  state.threadTitle = mine.threadTitle ?? "";
+}
+
 function loadPrefs() {
-  try { Object.assign(state, JSON.parse(localStorage.getItem(LS) || "{}")); } catch {}
+  const prefs = readPrefs();
+  const { byUser, shares, threadId, threadTitle, ...shared } = prefs;
+  Object.assign(state, shared);
+
+  // Migrate the pre-byUser layout, where these sat at the top level and leaked
+  // across accounts. Attribute them to the user who was last signed in.
+  if (!byUser && prefs.email && (shares || threadId)) {
+    state.shares = shares ?? [];
+    state.threadId = threadId ?? null;
+    state.threadTitle = threadTitle ?? "";
+    savePrefs();
+  }
+
+  adoptUser(state.email);
   if (INJECTED_KEY) state.apiKey = INJECTED_KEY;   // the served key always wins
 }
 
@@ -983,6 +1025,11 @@ function renderMarkdown(src) {
 
   text = text
     .replace(/\[citation:([^\]]+)\]/g, citeChip())
+    // A model writing a range as two brackets — "[58]-[60]" — leaves its hyphen
+    // between the resolved chips, which renders as chip-chip. The citations are
+    // real; only the dash is noise. Drop it when it is tight against both (a
+    // spaced " - " is more likely prose punctuation, so leave that alone).
+    .replace(/(<\/a>)[-–—](?=<a class="cite")/g, "$1")
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
@@ -1183,6 +1230,10 @@ async function doAuth(mode) {
 
   if (!email || !password) { $("#authMsg").textContent = "Email and password are required."; return; }
   if (!apiKey) { $("#authMsg").textContent = "The API key is required — it wires the chat model to your user."; return; }
+
+  // Whoever signed in last may not be who is signing in now: take only this
+  // user's shares and session, never the previous account's.
+  if (email !== state.email) adoptUser(email);
 
   Object.assign(state, {
     email, password, apiKey,
