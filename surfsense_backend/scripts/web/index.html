@@ -622,6 +622,17 @@ const MAX_FILE_BYTES = 500 * 1024 * 1024;
 const BATCH = 20;
 const POLL_MS = 3000, TIMEOUT_MS = 1_800_000, STABLE_POLLS = 2;
 
+// How long to wait for the FIRST document row before concluding nobody is making
+// them. Generous: it only has to cover the worker picking the job off the queue.
+const NO_DOCS_GRACE_MS = 60_000;
+
+const WORKER_HINT =
+  "/documents/folder-upload only queues a Celery task — the worker is what creates " +
+  "the documents, so an upload can succeed while nothing is ever indexed.\n\n" +
+  "Start it in surfsense_backend/:\n\n" +
+  "  uv run celery -A celery_worker.celery_app worker --loglevel=info \\\n" +
+  "    --concurrency=1 --pool=solo --queues=surfsense,surfsense.connectors";
+
 /**
  * Blocks until every document under `rootId` has settled. A folder can't answer
  * anything until it is fully indexed, and Celery keeps inserting rows after the
@@ -636,7 +647,15 @@ async function waitReady(rootId, expected, onProgress) {
     const failed = docs.filter((d) => d.status?.state === "failed").length;
     const busy = docs.filter((d) => ["processing", "deleting"].includes(d.status?.state)).length;
 
-    onProgress(ready, expected, busy, failed);
+    onProgress(ready, expected, busy, failed, docs.length);
+
+    // No rows at all, well past the time the worker needed to claim the job: it
+    // isn't running. Say so instead of polling in silence until TIMEOUT_MS.
+    if (docs.length === 0 && waited >= NO_DOCS_GRACE_MS) {
+      throw new ApiError(0,
+        `The upload was accepted, but ${Math.round(waited / 1000)}s later not one ` +
+        `document exists for this folder.\n\n${WORKER_HINT}`);
+    }
 
     if (docs.length > 0 && busy === 0) {
       const snap = `${docs.length}:${ready}:${failed}`;
@@ -649,7 +668,7 @@ async function waitReady(rootId, expected, onProgress) {
     await sleep(POLL_MS);
     waited += POLL_MS;
   }
-  throw new ApiError(0, "timed out waiting for indexing — is the Celery worker running?");
+  throw new ApiError(0, `Timed out after ${TIMEOUT_MS / 1000}s with indexing unfinished.\n\n${WORKER_HINT}`);
 }
 
 /**
@@ -728,8 +747,12 @@ async function ingest(fileList) {
       },
     });
 
-    const { ready, failed } = await waitReady(rootId, files.length, (r, exp, busy, bad) =>
-      progress(`indexing ${r}/${exp} · ${busy} processing · ${bad} failed`, 0.5 + (r / exp) * 0.5));
+    const { ready, failed } = await waitReady(rootId, files.length, (r, exp, busy, bad, total) =>
+      progress(
+        total === 0
+          ? "queued — waiting for the indexer to pick it up…"
+          : `indexing ${r}/${exp} · ${busy} processing · ${bad} failed`,
+        0.5 + (r / exp) * 0.5));
 
     if (ready < files.length) {
       const missing = files.length - ready - failed;
