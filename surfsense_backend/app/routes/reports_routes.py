@@ -19,6 +19,7 @@ import os
 import re
 import tempfile
 from enum import StrEnum
+from urllib.parse import quote
 
 import pypandoc
 import typst
@@ -153,6 +154,21 @@ def _normalize_latex_delimiters(text: str) -> str:
 
     text = re.sub(r"(?<!\$)\$(?!\$) +(.+?) +\$(?!\$)", _trim_inline_math, text)
     return text
+
+
+def _content_disposition(filename: str) -> str:
+    """Build a Content-Disposition value that is safe for latin-1 HTTP headers.
+
+    Starlette encodes header values as latin-1, but report titles can hold
+    arbitrary Unicode (e.g. Vietnamese "ổ"), which raises UnicodeEncodeError.
+    Emit an ASCII-only ``filename`` fallback plus an RFC 5987 ``filename*`` that
+    carries the real UTF-8 name for clients that understand it.
+    """
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii").strip() or "report"
+    return (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
 
 
 async def _get_report_with_access(
@@ -425,7 +441,7 @@ async def export_report(
                 io.BytesIO(pdf_bytes),
                 media_type="application/pdf",
                 headers={
-                    "Content-Disposition": f'attachment; filename="{safe_title}.pdf"',
+                    "Content-Disposition": _content_disposition(f"{safe_title}.pdf"),
                 },
             )
 
@@ -554,7 +570,7 @@ async def export_report(
             io.BytesIO(output),
             media_type=_MEDIA_TYPES[format],
             headers={
-                "Content-Disposition": f'attachment; filename="{safe_title}.{ext}"',
+                "Content-Disposition": _content_disposition(f"{safe_title}.{ext}"),
             },
         )
 
