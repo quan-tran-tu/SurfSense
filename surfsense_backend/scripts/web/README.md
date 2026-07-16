@@ -104,6 +104,37 @@ boundary, so user A can never see or delete user B's documents. This client
 never lets you name a space by id. Because the space name matches, `ask.sh` and
 this page share one knowledge base — ingest from the CLI, ask from the browser.
 
+## Chat commands
+
+Type these in the composer (a leading `/` marks a command; anything else is a
+question). `/help` lists them in-app.
+
+| command | what it does |
+|---|---|
+| `/report <query>` | Writes a Markdown report from your knowledge base and prints its id. Drives the backend's existing `generate_report` tool — same directive trick as **Force retrieval** — so no report-specific endpoint exists to bypass isolation. |
+| `/revise [id] <changes>` | Revises a report (defaults to the last one made in this session) — a new version in the same group. |
+| `/export [id] <format>` | Downloads a report. Formats: `pdf`, `docx`, `html`, `latex`, `epub`, `odt`, `plain`, and `md` (the raw Markdown source). Defaults to the last report, `pdf`. |
+| `/reports` | Lists the reports in this session. |
+
+Reports live in your search space, so `/reports` re-derives them from the server
+on demand — the in-chat "report ready" notes are just convenience and aren't
+persisted.
+
+## Admin
+
+A user whose `is_superuser` flag is set sees an **Admin** button in the sidebar.
+It opens a panel to manage every account, their folders, and all folder shares:
+deactivate or delete users, grant/revoke admin, delete any folder, and — the one
+thing a normal revoke can't do — **hard-revoke** a share, which deletes its
+`FolderLink`s so the shared folder is removed from every importer's knowledge
+base outright, not merely silenced. Every action is enforced server-side by
+`require_admin`; the button only hides dead controls from non-admins.
+
+Seed the first admin with `ADMIN_EMAILS` in the backend `.env` (comma-separated);
+those emails are promoted on their next login. After that, manage admins from the
+panel. The panel and its API bypass the per-user search-space isolation the rest
+of the app enforces — that is the point of an admin — so grant it sparingly.
+
 ## Answers, citations and sessions
 
 Three backend behaviours drive most of the client's non-obvious logic.

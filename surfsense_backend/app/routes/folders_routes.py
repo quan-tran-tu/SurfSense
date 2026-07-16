@@ -19,8 +19,8 @@ from app.schemas import (
 )
 from app.services.folder_service import (
     check_no_circular_reference,
+    dispatch_folder_deletion,
     generate_folder_position,
-    get_folder_subtree_ids,
     get_subtree_max_depth,
     validate_folder_depth,
 )
@@ -383,48 +383,11 @@ async def delete_folder(
             "You don't have permission to delete folders in this search space",
         )
 
-        subtree_ids = await get_folder_subtree_ids(session, folder_id)
-
-        doc_result = await session.execute(
-            select(Document.id).where(
-                Document.folder_id.in_(subtree_ids),
-                Document.status["state"].as_string() != "deleting",
-            )
-        )
-        document_ids = list(doc_result.scalars().all())
-
-        if document_ids:
-            await session.execute(
-                Document.__table__.update()
-                .where(Document.id.in_(document_ids))
-                .values(status={"state": "deleting"})
-            )
-            await session.commit()
-
-        try:
-            from app.tasks.celery_tasks.document_tasks import (
-                delete_folder_documents_task,
-            )
-
-            delete_folder_documents_task.delay(
-                document_ids, folder_subtree_ids=list(subtree_ids)
-            )
-        except Exception as err:
-            if document_ids:
-                await session.execute(
-                    Document.__table__.update()
-                    .where(Document.id.in_(document_ids))
-                    .values(status={"state": "ready"})
-                )
-                await session.commit()
-            raise HTTPException(
-                status_code=503,
-                detail="Could not queue folder deletion. Documents have been restored.",
-            ) from err
+        queued = await dispatch_folder_deletion(session, folder_id)
 
         return {
             "message": "Folder deletion started",
-            "documents_queued_for_deletion": len(document_ids),
+            "documents_queued_for_deletion": queued,
         }
 
     except HTTPException:

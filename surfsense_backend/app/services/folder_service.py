@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.db import Folder
+from app.db import Document, Folder
 
 MAX_FOLDER_DEPTH = 8
 
@@ -249,3 +249,57 @@ async def get_folder_subtree_ids(session: AsyncSession, folder_id: int) -> list[
         {"folder_id": folder_id},
     )
     return list(result.scalars().all())
+
+
+async def dispatch_folder_deletion(session: AsyncSession, folder_id: int) -> int:
+    """Mark a folder subtree's documents ``deleting`` and queue their removal.
+
+    The Celery job deletes the documents first, then the (now empty) folders — a
+    plain ``DELETE`` on the folder row would only SET NULL each ``Document.folder_id``,
+    orphaning the documents instead of removing them. Returns the number of
+    documents queued.
+
+    Authorization is the caller's responsibility: the user route gates on
+    ``DOCUMENTS_DELETE`` in the folder's space; the admin route gates on
+    ``is_superuser`` and skips the membership check entirely.
+    """
+    subtree_ids = await get_folder_subtree_ids(session, folder_id)
+
+    doc_result = await session.execute(
+        select(Document.id).where(
+            Document.folder_id.in_(subtree_ids),
+            Document.status["state"].as_string() != "deleting",
+        )
+    )
+    document_ids = list(doc_result.scalars().all())
+
+    if document_ids:
+        await session.execute(
+            Document.__table__.update()
+            .where(Document.id.in_(document_ids))
+            .values(status={"state": "deleting"})
+        )
+        await session.commit()
+
+    try:
+        from app.tasks.celery_tasks.document_tasks import (
+            delete_folder_documents_task,
+        )
+
+        delete_folder_documents_task.delay(
+            document_ids, folder_subtree_ids=list(subtree_ids)
+        )
+    except Exception as err:
+        if document_ids:
+            await session.execute(
+                Document.__table__.update()
+                .where(Document.id.in_(document_ids))
+                .values(status={"state": "ready"})
+            )
+            await session.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Could not queue folder deletion. Documents have been restored.",
+        ) from err
+
+    return len(document_ids)

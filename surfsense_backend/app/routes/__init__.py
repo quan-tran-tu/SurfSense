@@ -6,6 +6,7 @@ from app.gateway import require_gateway_enabled
 from app.notifications.api import router as notifications_router
 from app.podcasts.api import router as podcasts_router
 
+from .admin_routes import router as admin_router
 from .agent_action_log_route import router as agent_action_log_router
 from .agent_flags_route import router as agent_flags_router
 from .agent_permissions_route import router as agent_permissions_router
@@ -72,6 +73,7 @@ from .youtube_routes import router as youtube_router
 
 router = APIRouter()
 
+router.include_router(admin_router)  # System-admin API (is_superuser only)
 router.include_router(search_spaces_router)
 router.include_router(rbac_router)  # RBAC routes for roles, members, invites
 router.include_router(editor_router)

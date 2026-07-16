@@ -110,6 +110,15 @@
   .status.warn { color: var(--warn); font-style: normal; }
   .cursor::after { content: "▍"; opacity: .6; }
 
+  /* A client-side note (command output: report ready, /help, …). Not persisted;
+     it re-derives from the server on demand (/reports), so a reload dropping it
+     loses nothing. Dashed + muted to read as chrome, not as the model speaking. */
+  .msg.system .bubble.sys {
+    background: var(--panel); border: 1px dashed var(--line); color: var(--muted);
+    border-radius: var(--radius); padding: 9px 13px; white-space: pre-wrap; font-size: 13px;
+  }
+  .msg.system .bubble.sys a { color: var(--accent); cursor: pointer; }
+
   footer { border-top: 1px solid var(--line); padding: 14px 24px 16px; background: var(--panel); }
   .composer { max-width: 760px; margin: 0 auto; }
   .composer .box { display: flex; gap: 8px; align-items: flex-end; }
@@ -162,6 +171,41 @@
     color: var(--fg); background: var(--panel-2); border-left: 2px solid var(--accent);
     border-radius: 0 6px 6px 0; padding: 8px 12px;
   }
+
+  /* ---- admin overlay ---- */
+  #adminBtn { margin-top: 8px; width: 100%; }
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .overlay .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    width: 900px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column;
+  }
+  .overlay header {
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .overlay header .t { flex: 1; font-size: 15px; font-weight: 600; }
+  .overlay .body { overflow-y: auto; padding: 8px 16px 16px; }
+  .overlay .body h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+    margin: 18px 0 8px;
+  }
+  .arow {
+    display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px;
+    border-bottom: 1px solid var(--line); font-size: 13px; flex-wrap: wrap;
+  }
+  .arow .grow { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+  .arow .sub { color: var(--muted); font-size: 12px; }
+  .badge {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px;
+    border-radius: 4px; border: 1px solid var(--line); color: var(--muted);
+  }
+  .badge.admin { color: var(--accent); border-color: var(--accent); }
+  .badge.off  { color: var(--warn); border-color: var(--warn); }
+  .badge.dead { color: var(--err); border-color: var(--err); }
+  .afolders { width: 100%; padding: 4px 0 4px 16px; }
 </style>
 </head>
 <body>
@@ -241,6 +285,7 @@
 
     <section style="margin-top:auto; border-bottom:none">
       <div class="note mono" id="whoami"></div>
+      <button id="adminBtn" class="sm hide">Admin</button>
       <button id="signOut" class="sm" style="margin-top:8px; width:100%">Sign out</button>
     </section>
   </aside>
@@ -250,7 +295,7 @@
     <footer>
       <div class="composer">
         <div class="box">
-          <textarea id="q" rows="1" placeholder="Ask your knowledge base…  (Enter to send, Shift+Enter for a newline)"></textarea>
+          <textarea id="q" rows="1" placeholder="Ask your knowledge base…  (/help for commands · Enter to send, Shift+Enter for a newline)"></textarea>
           <button id="send" class="primary">Send</button>
         </div>
         <div class="opts">
@@ -272,6 +317,25 @@
     </header>
     <div class="body" id="citeBody"></div>
   </aside>
+</div>
+
+<!-- ===================== admin (superusers only) ===================== -->
+<div id="admin" class="overlay hide">
+  <div class="panel">
+    <header>
+      <span class="t">System admin</span>
+      <button id="adminRefresh" class="sm">Refresh</button>
+      <button id="adminClose" class="sm">✕</button>
+    </header>
+    <div class="body">
+      <h3>Users</h3>
+      <div id="adminUsers"></div>
+      <h3>Folder shares — hard-revoke removes the folder from every importer</h3>
+      <div id="adminShares"></div>
+      <h3>Imported links</h3>
+      <div id="adminLinks"></div>
+    </div>
+  </div>
 </div>
 
 <div id="toasts"></div>
@@ -298,6 +362,8 @@ const state = {
   model: "deepseek-chat", modelBase: "https://api.deepseek.com/v1",
   forceSearch: true,
   spaceId: null, threadId: null, threadTitle: "",
+  lastReportId: null,   // most recent report in this thread; the default for /export and /revise
+  isAdmin: false,       // is_superuser — gates the Admin panel (server also enforces it)
   relogged: false, busy: false,
   shares: [],       // [{path, token}] — the backend has no list endpoint, so we remember
 };
@@ -532,6 +598,7 @@ const listThreads = async () => {
 async function openThread(thread) {
   state.threadId = thread.id;
   state.threadTitle = thread.title;
+  state.lastReportId = null;   // the /export|/revise default is per-thread; don't carry it across
   savePrefs();
   await Promise.all([renderSessions(), loadHistory()]);
   renderContext();
@@ -582,8 +649,15 @@ function assistantAnswer(content) {
   return blocks.pop() ?? "";
 }
 
-/** Questions go to the backend wrapped in the force-retrieval directive; show only what the user typed. */
-const unwrapQuestion = (text) => text.match(/<question>\n([\s\S]*?)\n<\/question>/)?.[1] ?? text;
+/**
+ * Questions go to the backend wrapped in a directive (force-retrieval for a normal
+ * ask, generate_report for /report); show only what the user typed. Match either
+ * wrapper so reloaded history stays clean instead of showing the raw directive.
+ */
+const unwrapQuestion = (text) =>
+  text.match(/<question>\n([\s\S]*?)\n<\/question>/)?.[1]
+  ?? text.match(/<report_request>\n([\s\S]*?)\n<\/report_request>/)?.[1]
+  ?? text;
 
 async function loadHistory() {
   closeCitation();
@@ -911,12 +985,23 @@ function textBlocks() {
   };
 }
 
-async function ask(question) {
+/**
+ * Run one chat turn.
+ *
+ * `opts` lets a slash command reuse the whole streaming/settle path without
+ * duplicating it:
+ *   opts.display  — text shown in the user bubble (default: `question`)
+ *   opts.query    — the actual user_query sent to the backend (default: the
+ *                   force-retrieval wrapping of `question`)
+ *   opts.onDone   — awaited after the answer settles (used by /report to find
+ *                   and announce the report the generate_report tool just wrote)
+ */
+async function ask(question, opts = {}) {
   if (state.busy) return;
   state.busy = true;
   $("#send").disabled = true;
 
-  addMessage("user", question);
+  addMessage("user", opts.display ?? question);
   const { bubble, setStatus } = addMessage("assistant", "", true);
 
   const blocks = textBlocks();
@@ -930,7 +1015,7 @@ async function ask(question) {
       json: {
         chat_id: state.threadId,
         search_space_id: state.spaceId,
-        user_query: buildQuery(question),
+        user_query: opts.query ?? buildQuery(question),
       },
     });
 
@@ -975,6 +1060,14 @@ async function ask(question) {
     } else {
       setStatus(null);
       await settleAnswer(bubble, blocks.answer());
+    }
+    // A slash command's follow-up (e.g. /report locating the artifact the tool
+    // wrote). Runs whether or not text streamed — generate_report can succeed
+    // while the final narration block is empty. Its own errors surface via
+    // setStatus, so it must not take down the turn.
+    if (opts.onDone) {
+      try { await opts.onDone({ setStatus }); }
+      catch (e) { setStatus(e.message, "err"); }
     }
   } catch (e) {
     setStatus(e.message, "err");
@@ -1047,6 +1140,209 @@ function describeEvent(ev) {
   if (ev.type.includes("thinking") || ev.type.includes("reasoning")) return "thinking…";
   if (ev.type === "task" || ev.type.includes("agent")) return "delegating to the knowledge_base agent…";
   return "working…";
+}
+
+/* ---------------------------------------------------------- chat commands */
+//
+// Slash commands typed into the composer. /report and /revise drive the backend's
+// existing generate_report tool (in the `deliverables` subagent, reachable via the
+// `task` delegation tool) with a compelling directive — the same trick buildQuery()
+// uses to force retrieval — rather than any new endpoint. /export and /reports use
+// the report CRUD/export routes as-is.
+
+const EXPORT_FORMATS = ["pdf", "docx", "html", "latex", "epub", "odt", "plain", "md"];
+
+/** Parse "/cmd rest" and dispatch. Unknown commands toast rather than hit the model. */
+async function runCommand(line) {
+  const sp = line.indexOf(" ");
+  const cmd = (sp === -1 ? line : line.slice(0, sp)).toLowerCase();
+  const arg = sp === -1 ? "" : line.slice(sp + 1).trim();
+  switch (cmd) {
+    case "/report":  return reportCommand(arg);
+    case "/revise":  return reviseCommand(arg);
+    case "/export":  return exportCommand(arg);
+    case "/reports": return listReportsCommand();
+    case "/help":    return helpCommand();
+    default:
+      toast(`Unknown command ${cmd}. Try /help.`, "warn");
+  }
+}
+
+/**
+ * Wrap a report request in a directive that MUST reach generate_report. Mirrors
+ * buildQuery(): the tool is two delegation hops away (supervisor → deliverables →
+ * generate_report), so weaker models need to be told the exact path. kb_search
+ * lets the tool pull its own sources from the knowledge base.
+ */
+function buildReportQuery(request, parentId) {
+  const revise = parentId
+    ? `\n- parent_report_id: ${parentId}  — this REVISES that existing report. Put the ` +
+      `requested change in user_instructions and preserve unrelated sections.`
+    : "";
+  return `<instructions>
+The user wants a written REPORT saved as a deliverable artifact — not a chat answer.
+You MUST produce it by delegating to the \`deliverables\` subagent and calling the
+\`generate_report\` tool exactly once. Do not answer in prose, and do not merely
+summarize in chat.
+
+Call generate_report with:
+- topic: a short title (<= 8 words) describing the report
+- source_strategy: "kb_search"
+- search_queries: 2-5 specific queries that retrieve what this report needs. If the
+  indexed documents are in another language, search in that language.
+- report_style: "detailed", unless the request clearly asks for a brief or
+  deep-research report${revise}
+
+After the tool returns, reply with ONE short line naming the report. Never claim
+success without the tool's confirmation.
+</instructions>
+
+<report_request>
+${request}
+</report_request>`;
+}
+
+/** Every report belonging to the current thread, newest first. */
+async function threadReports() {
+  const all = await apiJson("GET", `/api/v1/reports?search_space_id=${state.spaceId}&limit=500`);
+  return (all ?? []).filter((r) => r.thread_id === state.threadId)
+                    .sort((a, b) => b.id - a.id);
+}
+
+/**
+ * The newest report in this thread with id > `beforeId`, i.e. one created by the
+ * turn we just ran. generate_report commits inside the turn, but that can trail the
+ * last streamed byte, so retry briefly (as settleAnswer does for the message).
+ */
+async function newestReportSince(beforeId) {
+  for (const wait of [0, 500, 1200]) {
+    if (wait) await sleep(wait);
+    const fresh = (await threadReports()).filter((r) => r.id > beforeId);
+    if (fresh.length) return fresh[0];
+  }
+  return null;
+}
+
+async function reportCommand(request, parentId = null) {
+  if (!request) { toast("Usage: /report <what the report should cover>", "warn"); return; }
+  const before = (await threadReports()).reduce((m, r) => Math.max(m, r.id), 0);
+
+  await ask(request, {
+    display: (parentId ? `/revise ${parentId} ` : "/report ") + request,
+    query: buildReportQuery(request, parentId),
+    onDone: async ({ setStatus }) => {
+      const rep = await newestReportSince(before);
+      if (!rep) {
+        setStatus("No report was produced — the model may not have called generate_report. " +
+                  "Try rephrasing, or run /report again.", "warn");
+        return;
+      }
+      if (rep.report_metadata?.status === "failed") {
+        addSystemNote(`⚠ Report #${rep.id} failed: ${rep.report_metadata?.error_message ?? "unknown error"}`);
+        return;
+      }
+      state.lastReportId = rep.id;
+      addSystemNote(
+        `📄 Report #${rep.id} — “${rep.title}” is ready.\n` +
+        `Download it:  /export ${rep.id} pdf   (also: docx, html, latex, epub, odt, plain, md)\n` +
+        `Revise it:    /revise ${rep.id} <what to change>`);
+    },
+  });
+}
+
+function reviseCommand(arg) {
+  const parts = arg.split(/\s+/).filter(Boolean);
+  let id = state.lastReportId;
+  let instructions = arg;
+  if (parts.length && /^\d+$/.test(parts[0])) {
+    id = Number(parts[0]);
+    instructions = parts.slice(1).join(" ");
+  }
+  if (!id) { toast("No report to revise. Run /report first, or /revise <report_id> <changes>.", "warn"); return; }
+  if (!instructions.trim()) { toast("Usage: /revise [report_id] <what to change>", "warn"); return; }
+  return reportCommand(instructions, id);
+}
+
+async function exportCommand(arg) {
+  const parts = arg.split(/\s+/).filter(Boolean);
+  let id, fmt;
+  if (parts.length >= 2) { [id, fmt] = parts; }
+  else if (parts.length === 1) {
+    if (/^\d+$/.test(parts[0])) { id = parts[0]; fmt = "pdf"; }   // "/export 12" → pdf
+    else { fmt = parts[0]; id = state.lastReportId; }            // "/export docx" → last report
+  } else {
+    fmt = "pdf"; id = state.lastReportId;
+  }
+
+  if (!id) { toast("No report to export. Run /report first, or /export <report_id> <format>.", "warn"); return; }
+  fmt = (fmt || "pdf").toLowerCase();
+  if (fmt === "markdown") fmt = "md";
+  if (!EXPORT_FORMATS.includes(fmt)) {
+    toast(`Unknown format "${fmt}". One of: ${EXPORT_FORMATS.join(", ")}.`, "warn");
+    return;
+  }
+  await downloadReport(Number(id), fmt);
+}
+
+/** Map an export format to the extension our fallback filename uses. */
+const EXT_FOR = { latex: "tex", plain: "txt", md: "md" };
+
+/**
+ * Download a report. `md` is the raw Markdown source (the /content route); every
+ * other format is server-rendered by /export. The response is fetched with the
+ * session cookie via api(), then handed to the browser as a blob — Content-
+ * Disposition isn't readable cross-origin, so the filename is derived locally.
+ */
+async function downloadReport(id, fmt) {
+  try {
+    if (fmt === "md") {
+      const c = await apiJson("GET", `/api/v1/reports/${id}/content`);
+      const name = `${safeFilename(c?.title) || `report-${id}`}.md`;
+      triggerDownload(new Blob([c?.content ?? ""], { type: "text/markdown;charset=utf-8" }), name);
+    } else {
+      const res = await api("GET", `/api/v1/reports/${id}/export?format=${fmt}`);
+      const blob = await res.blob();
+      triggerDownload(blob, `report-${id}.${EXT_FOR[fmt] ?? fmt}`);
+    }
+    toast(`Exported report #${id} as ${fmt}.`, "ok");
+  } catch (e) {
+    toast(`Export of report #${id} failed: ${e.message}`, "err", 10000);
+  }
+}
+
+const safeFilename = (s) => (s ?? "").replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 80);
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function listReportsCommand() {
+  const rs = await threadReports();
+  if (!rs.length) { addSystemNote("No reports in this session yet. Create one with /report <query>."); return; }
+  const lines = rs.map((r) =>
+    `#${r.id} — ${r.title}${r.report_metadata?.status === "failed" ? "  (failed)" : ""}`);
+  addSystemNote("Reports in this session:\n" + lines.join("\n") +
+    "\n\nDownload: /export <id> <pdf|docx|html|latex|epub|odt|plain|md>");
+}
+
+function helpCommand() {
+  addSystemNote([
+    "Chat commands:",
+    "  /report <query>          write a Markdown report from your knowledge base",
+    "  /revise [id] <changes>   revise a report (defaults to the last one made here)",
+    "  /export [id] <format>    download a report — pdf, docx, html, latex, epub, odt, plain, md",
+    "  /reports                 list the reports in this session",
+    "  /help                    show this",
+    "",
+    "Anything without a leading / is asked against your knowledge base.",
+  ].join("\n"));
 }
 
 /* -------------------------------------------------------------- rendering */
@@ -1184,6 +1480,22 @@ function addMessage(role, text, streaming = false) {
   return { bubble, setStatus };
 }
 
+/**
+ * A client-side note in the message flow — command output like "report ready" or
+ * /help. Not sent to the model and not persisted; /reports re-derives report state
+ * from the server, so a reload dropping these notes loses nothing.
+ */
+function addSystemNote(text) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg system";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble sys";
+  bubble.textContent = text;
+  wrap.append(bubble);
+  $("#msgs").append(wrap);
+  scrollDown();
+}
+
 async function renderSessions() {
   const box = $("#sessions");
   const threads = await listThreads();
@@ -1293,6 +1605,186 @@ function renderContext() {
   $("#whoami").textContent = `${state.email}\ncli:${state.email}`;
 }
 
+/* ------------------------------------------------------------------- admin */
+//
+// Shown only to system admins (is_superuser). Every action is also enforced
+// server-side by require_admin, so a non-admin who forced the panel open would
+// just get 403s — the client gate is only about not showing dead buttons.
+
+const adminApi = (method, path, opts) => apiJson(method, `/api/v1/admin${path}`, opts);
+
+/** Read is_superuser off /users/me and reveal the Admin button if set. */
+async function detectAdmin() {
+  try {
+    const me = await apiJson("GET", "/users/me");
+    state.isAdmin = !!me?.is_superuser;
+  } catch { state.isAdmin = false; }
+  $("#adminBtn").classList.toggle("hide", !state.isAdmin);
+}
+
+async function openAdmin() {
+  $("#admin").classList.remove("hide");
+  await refreshAdmin();
+}
+const closeAdmin = () => $("#admin").classList.add("hide");
+
+async function refreshAdmin() {
+  await Promise.all([renderAdminUsers(), renderAdminShares(), renderAdminLinks()]);
+}
+
+function makeBtn(label, cls, onClick) {
+  const b = document.createElement("button");
+  b.className = `sm ${cls}`;
+  b.textContent = label;
+  b.onclick = onClick;
+  return b;
+}
+
+async function renderAdminUsers() {
+  const box = $("#adminUsers");
+  box.textContent = "Loading…";
+  const users = await adminApi("GET", "/users");
+  box.replaceChildren();
+
+  for (const u of users) {
+    const row = document.createElement("div");
+    row.className = "arow";
+
+    const info = document.createElement("div");
+    info.className = "grow";
+    info.innerHTML = `<span></span>
+      <div class="sub">${u.search_space_count} space(s)</div>`;
+    info.querySelector("span").textContent = u.email;
+    if (u.is_superuser) info.querySelector("span").after(tagged(" admin", "admin"));
+    if (!u.is_active) info.querySelector("span").after(tagged(" inactive", "off"));
+    row.append(info);
+
+    row.append(makeBtn(u.is_superuser ? "Remove admin" : "Make admin", "", () =>
+      guard(async () => {
+        await adminApi("PATCH", `/users/${u.id}`, { json: { is_superuser: !u.is_superuser } });
+        await renderAdminUsers();
+      })));
+    row.append(makeBtn(u.is_active ? "Deactivate" : "Activate", "", () =>
+      guard(async () => {
+        await adminApi("PATCH", `/users/${u.id}`, { json: { is_active: !u.is_active } });
+        await renderAdminUsers();
+      })));
+
+    const foldersBox = document.createElement("div");
+    foldersBox.className = "afolders hide";
+    row.append(makeBtn("Folders", "", () =>
+      guard(() => toggleUserFolders(u, foldersBox))));
+
+    row.append(makeBtn("Delete", "danger", () => {
+      if (confirm(`Delete user ${u.email} and ALL their data (spaces, folders, documents, chats)?\n\nThis cannot be undone.`)) {
+        guard(async () => {
+          await adminApi("DELETE", `/users/${u.id}`);
+          toast(`Deleted ${u.email}.`);
+          await refreshAdmin();
+        });
+      }
+    }));
+
+    box.append(row, foldersBox);
+  }
+  if (!users.length) box.innerHTML = '<div class="empty">no users</div>';
+}
+
+const tagged = (text, cls) => {
+  const s = document.createElement("span");
+  s.className = `badge ${cls}`;
+  s.textContent = text.trim();
+  s.style.marginLeft = "6px";
+  return s;
+};
+
+async function toggleUserFolders(user, box) {
+  if (!box.classList.contains("hide")) { box.classList.add("hide"); return; }
+  box.classList.remove("hide");
+  box.textContent = "Loading…";
+  const folders = await adminApi("GET", `/users/${user.id}/folders`);
+  box.replaceChildren();
+  if (!folders.length) { box.innerHTML = '<div class="empty">no folders</div>'; return; }
+  for (const f of folders) {
+    const r = document.createElement("div");
+    r.className = "arow";
+    const g = document.createElement("div");
+    g.className = "grow";
+    g.innerHTML = `<span></span> <span class="sub">in ${f.search_space_name ?? `space #${f.search_space_id}`}</span>`;
+    g.querySelector("span").textContent = f.name;
+    r.append(g);
+    r.append(makeBtn("Delete", "danger", () => {
+      if (confirm(`Delete folder "${f.name}" (of ${user.email}) and its documents?`)) {
+        guard(async () => {
+          await adminApi("DELETE", `/folders/${f.id}`);
+          toast(`Deleting "${f.name}" (documents are queued for removal).`);
+          await toggleUserFolders(user, box);  // collapse
+        });
+      }
+    }));
+    box.append(r);
+  }
+}
+
+async function renderAdminShares() {
+  const box = $("#adminShares");
+  box.textContent = "Loading…";
+  const shares = await adminApi("GET", "/folder-shares");
+  box.replaceChildren();
+  if (!shares.length) { box.innerHTML = '<div class="empty">no shares</div>'; return; }
+
+  for (const s of shares) {
+    const row = document.createElement("div");
+    row.className = "arow";
+    const g = document.createElement("div");
+    g.className = "grow";
+    g.innerHTML = `<span></span>
+      <div class="sub">by ${s.created_by_email ?? "—"} · ${s.link_count} importer(s) · ` +
+      `${s.uses_count} use(s)</div>`;
+    g.querySelector("span").textContent = s.name ?? `folder #${s.source_folder_id}`;
+    if (s.revoked_at) g.querySelector("span").after(tagged(" revoked", "dead"));
+    row.append(g);
+    row.append(makeBtn("Hard-revoke", "danger", () => {
+      if (confirm(`Hard-revoke "${s.name ?? s.source_folder_id}"?\n\nIt is removed from all ${s.link_count} importer(s)' knowledge bases immediately.`)) {
+        guard(async () => {
+          const r = await adminApi("DELETE", `/folder-shares/${s.id}`);
+          toast(`Revoked — removed from ${r?.links_removed ?? 0} knowledge base(s).`);
+          await refreshAdmin();
+        });
+      }
+    }));
+    box.append(row);
+  }
+}
+
+async function renderAdminLinks() {
+  const box = $("#adminLinks");
+  box.textContent = "Loading…";
+  const links = await adminApi("GET", "/folder-links");
+  box.replaceChildren();
+  if (!links.length) { box.innerHTML = '<div class="empty">nothing imported</div>'; return; }
+
+  for (const l of links) {
+    const row = document.createElement("div");
+    row.className = "arow";
+    const g = document.createElement("div");
+    g.className = "grow";
+    g.innerHTML = `<span></span> <span class="sub">→ ${l.target_owner_email ?? `space #${l.target_search_space_id}`}</span>`;
+    g.querySelector("span").textContent = l.source_folder_name ?? `folder #${l.source_folder_id}`;
+    row.append(g);
+    row.append(makeBtn("Remove", "danger", () => {
+      if (confirm(`Remove this imported folder from ${l.target_owner_email ?? "that user"}'s knowledge base?\n\nThe owner's folder is untouched.`)) {
+        guard(async () => {
+          await adminApi("DELETE", `/folder-links/${l.id}`);
+          toast("Import removed.");
+          await refreshAdmin();
+        });
+      }
+    }));
+    box.append(row);
+  }
+}
+
 /* ------------------------------------------------------------------ wiring */
 
 /** Runs an async handler, turning any ApiError into a toast instead of a dead UI. */
@@ -1315,6 +1807,7 @@ async function start() {
   await renderImports();
   renderShares();
   renderContext();
+  await detectAdmin();
   showApp();
 }
 
@@ -1397,6 +1890,10 @@ function init() {
 
   $("#signOut").onclick = () => { state.password = ""; location.reload(); };
 
+  $("#adminBtn").onclick = () => guard(openAdmin);
+  $("#adminClose").onclick = closeAdmin;
+  $("#adminRefresh").onclick = () => guard(refreshAdmin);
+
   $("#newSessionBtn").onclick = () => {
     const title = $("#newSession").value.trim();
     if (!title) return;
@@ -1427,7 +1924,11 @@ function init() {
     guard(() => openCitation(chip.dataset.cite, chip));
   });
   $("#citeClose").onclick = closeCitation;
-  document.addEventListener("keydown", (e) => e.key === "Escape" && closeCitation());
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!$("#admin").classList.contains("hide")) closeAdmin();
+    else closeCitation();
+  });
 
   const q = $("#q");
   const submit = () => {
@@ -1435,7 +1936,8 @@ function init() {
     if (!text || state.busy) return;
     q.value = "";
     q.style.height = "auto";
-    guard(() => ask(text));
+    // A leading slash is a command (/report, /export, …); everything else is a question.
+    guard(() => (text[0] === "/" ? runCommand(text) : ask(text)));
   };
   $("#send").onclick = submit;
   q.addEventListener("keydown", (e) => {

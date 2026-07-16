@@ -765,6 +765,16 @@ class Config:
     AUTH_TYPE = os.getenv("AUTH_TYPE", "LOCAL")
     REGISTRATION_ENABLED = os.getenv("REGISTRATION_ENABLED", "TRUE").upper() == "TRUE"
 
+    # Comma-separated emails that are auto-granted system-admin (is_superuser) on
+    # their next login. This is the bootstrap for the admin API (app/routes/
+    # admin_routes.py): with no endpoint to mint the first admin, the first one is
+    # seeded from config. Matched case-insensitively. Empty by default.
+    ADMIN_EMAILS = frozenset(
+        e.strip().lower()
+        for e in os.getenv("ADMIN_EMAILS", "").split(",")
+        if e.strip()
+    )
+
     # Google OAuth
     GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
     GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")

@@ -135,10 +135,19 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     ) -> None:
         try:
             async with async_session_maker() as session:
+                values = {"last_login": datetime.now(UTC)}
+                # Bootstrap system admins from config: there is no endpoint to mint
+                # the first one, so a configured email is promoted on login. Never
+                # demote here — an admin removed from the list keeps access until an
+                # admin revokes it via the API, so a config typo can't lock everyone out.
+                if (
+                    not user.is_superuser
+                    and (user.email or "").lower() in config.ADMIN_EMAILS
+                ):
+                    values["is_superuser"] = True
+                    logger.info(f"Promoting {user.email} to system admin (ADMIN_EMAILS)")
                 await session.execute(
-                    update(User)
-                    .where(User.id == user.id)
-                    .values(last_login=datetime.now(UTC))
+                    update(User).where(User.id == user.id).values(**values)
                 )
                 await session.commit()
         except Exception as e:
@@ -399,5 +408,22 @@ async def require_session_context(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This action requires an interactive session",
+        )
+    return auth
+
+
+async def require_admin(
+    auth: AuthContext = Depends(get_auth_context),
+) -> AuthContext:
+    """Require a system admin (``is_superuser``). Gates the admin API.
+
+    Deliberately allows PAT principals too: an admin's PAT is as privileged as
+    their session. The gate is the ``is_superuser`` flag, seeded from
+    ``config.ADMIN_EMAILS`` on login and thereafter managed via the admin API.
+    """
+    if not getattr(auth.user, "is_superuser", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="System administrator access required",
         )
     return auth
