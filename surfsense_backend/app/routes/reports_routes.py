@@ -156,6 +156,21 @@ def _normalize_latex_delimiters(text: str) -> str:
     return text
 
 
+# Branding footer that older reports may still carry in their stored content.
+# New reports no longer add it (see deliverables/tools/report.py); strip it from
+# any pre-existing report at export time so downloads are clean.
+_LEGACY_REPORT_FOOTER = "Powered by SurfSense AI."
+
+
+def _strip_report_footer(md: str) -> str:
+    out = md.rstrip()
+    while out.endswith(_LEGACY_REPORT_FOOTER):
+        out = out[: out.rfind(_LEGACY_REPORT_FOOTER)].rstrip()
+        if out.endswith("---"):
+            out = out[:-3].rstrip()
+    return out
+
+
 def _content_disposition(filename: str) -> str:
     """Build a Content-Disposition value that is safe for latin-1 HTTP headers.
 
@@ -448,6 +463,7 @@ async def export_report(
         # Strip wrapping code fences that LLMs sometimes add around Markdown.
         # Without this, pandoc treats the entire content as a code block.
         markdown_content = _strip_wrapping_code_fences(report.content)
+        markdown_content = _strip_report_footer(markdown_content)
 
         # Normalise all LaTeX math delimiters (\(\), \[\], \begin{equation},
         # etc.) into $/$$ form that pandoc's tex_math_dollars extension can parse.

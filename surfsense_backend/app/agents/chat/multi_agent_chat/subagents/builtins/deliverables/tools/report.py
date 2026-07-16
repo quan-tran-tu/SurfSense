@@ -1025,15 +1025,13 @@ def create_generate_report_tool(
                     error=error_msg,
                 )
 
-            # Strip any existing footer(s) carried over from parent version(s)
+            # Strip the branding footer, including any carried over from a parent
+            # version. It is intentionally NOT re-appended — reports ship without it.
             while report_content.rstrip().endswith(_REPORT_FOOTER):
                 idx = report_content.rstrip().rfind(_REPORT_FOOTER)
                 report_content = report_content[:idx].rstrip()
                 if report_content.rstrip().endswith("---"):
                     report_content = report_content.rstrip()[:-3].rstrip()
-
-            # Append exactly one standard footer.
-            report_content += "\n\n---\n\n" + _REPORT_FOOTER
 
             metadata = _extract_metadata(report_content)
 
