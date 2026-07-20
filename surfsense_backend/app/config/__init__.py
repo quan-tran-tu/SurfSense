@@ -912,8 +912,24 @@ class Config:
     _embedding_window = getattr(embedding_model_instance, "max_seq_length", 512)
     _chunk_size = min(CHUNK_SIZE, _embedding_window)
 
-    chunker_instance = RecursiveChunker(chunk_size=_chunk_size)
-    code_chunker_instance = CodeChunker(chunk_size=_chunk_size)
+    # Chonkie's chunkers default to tokenizer="character", which would silently
+    # make CHUNK_SIZE count characters -- roughly a 4x undercount against the
+    # token-denominated max_seq_length we clamp to, and inconsistent across
+    # languages. Pass the embedding model's own tokenizer so chunk boundaries
+    # are measured in the same units the model will encode. Fall back to the
+    # character default if a provider exposes no tokenizer; a coarser chunker
+    # is preferable to failing config import, which would break the whole app.
+    try:
+        _chunker_tokenizer = embedding_model_instance.get_tokenizer()
+    except Exception:  # noqa: BLE001 - provider-specific; degrade, don't crash
+        _chunker_tokenizer = "character"
+
+    chunker_instance = RecursiveChunker(
+        tokenizer=_chunker_tokenizer, chunk_size=_chunk_size
+    )
+    code_chunker_instance = CodeChunker(
+        tokenizer=_chunker_tokenizer, chunk_size=_chunk_size
+    )
 
     # Reranker's Configuration | Pinecone, Cohere etc. Read more at https://github.com/AnswerDotAI/rerankers?tab=readme-ov-file#usage
     RERANKERS_ENABLED = os.getenv("RERANKERS_ENABLED", "FALSE").upper() == "TRUE"
