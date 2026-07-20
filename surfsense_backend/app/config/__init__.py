@@ -902,12 +902,18 @@ class Config:
         **embedding_kwargs,
     )
     is_local_embedding_model = "://" not in (EMBEDDING_MODEL or "")
-    chunker_instance = RecursiveChunker(
-        chunk_size=getattr(embedding_model_instance, "max_seq_length", 512)
-    )
-    code_chunker_instance = CodeChunker(
-        chunk_size=getattr(embedding_model_instance, "max_seq_length", 512)
-    )
+
+    # Retrieval granularity, not model capacity. A model's context window is a
+    # ceiling on what it can encode, not a good size for a retrievable unit:
+    # chunking at the ceiling collapses a document into one chunk, which yields
+    # one coarse citation and crowds diverse hits out of a fixed top-k.
+    # Clamped so a model with a smaller window than CHUNK_SIZE never truncates.
+    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
+    _embedding_window = getattr(embedding_model_instance, "max_seq_length", 512)
+    _chunk_size = min(CHUNK_SIZE, _embedding_window)
+
+    chunker_instance = RecursiveChunker(chunk_size=_chunk_size)
+    code_chunker_instance = CodeChunker(chunk_size=_chunk_size)
 
     # Reranker's Configuration | Pinecone, Cohere etc. Read more at https://github.com/AnswerDotAI/rerankers?tab=readme-ov-file#usage
     RERANKERS_ENABLED = os.getenv("RERANKERS_ENABLED", "FALSE").upper() == "TRUE"
