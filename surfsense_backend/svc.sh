@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+# svc.sh - start/stop/inspect the 4 background services.
+#
+#   ./svc.sh --start --deepseek sk-...
+#   ./svc.sh --stop
+#   ./svc.sh --status
+#   ./svc.sh --logs worker -f
+#
+# Services: worker, beat, main, serve
+
+set -uo pipefail
+
+# ---------------------------------------------------------------- config ----
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUN_DIR="${RUN_DIR:-$ROOT/.run}"
+LOG_DIR="${LOG_DIR:-$ROOT/logs}"
+ENV_FILE="$RUN_DIR/env"
+
+DEFAULT_Q="${CELERY_TASK_DEFAULT_QUEUE:-surfsense}"
+GPU="${CUDA_VISIBLE_DEVICES:-2}"
+SERVE_PORT="${SERVE_PORT:-39317}"
+
+# Locate surfsense_backend whether this script sits in the repo root or
+# inside the backend itself. Override with BACKEND_DIR=... if neither fits.
+if [[ -z "${BACKEND_DIR:-}" ]]; then
+  if   [[ -f "$ROOT/main.py" ]];                    then BACKEND_DIR="$ROOT"
+  elif [[ -f "$ROOT/surfsense_backend/main.py" ]];  then BACKEND_DIR="$ROOT/surfsense_backend"
+  else BACKEND_DIR="$ROOT/surfsense_backend"
+  fi
+fi
+WEB_DIR="${WEB_DIR:-$BACKEND_DIR/scripts/web}"
+
+SERVICES=(worker beat main serve)
+
+mkdir -p "$RUN_DIR" "$LOG_DIR"
+
+# Working directory for each service.
+dir_for() {
+  case "$1" in
+    worker|beat|main) echo "$BACKEND_DIR" ;;
+    serve)            echo "$WEB_DIR" ;;
+    *)                return 1 ;;
+  esac
+}
+
+# The command line for each service.
+cmd_for() {
+  case "$1" in
+    worker) echo "uv run celery -A celery_worker.celery_app worker --loglevel=info --concurrency=1 --pool=solo --queues=${DEFAULT_Q},${DEFAULT_Q}.connectors,${DEFAULT_Q}.gateway" ;;
+    beat)   echo "uv run celery -A celery_worker.celery_app beat --loglevel=info" ;;
+    main)   echo "uv run main.py" ;;
+    serve)  echo "uv run python serve.py ${SERVE_PORT} --deepseek ${DEEPSEEK_API_KEY:-}" ;;
+    *)      return 1 ;;
+  esac
+}
+
+# Services that need the GPU pinned.
+needs_gpu() { [[ "$1" != "serve" ]]; }
+
+# ----------------------------------------------------------------- utils ----
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
+log()  { printf '%s\n' "$*" >&2; }
+die()  { printf '%serror:%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
+
+pidfile() { echo "$RUN_DIR/$1.pid"; }
+logfile() { echo "$LOG_DIR/$1.log"; }
+
+is_running() {
+  local pf; pf="$(pidfile "$1")"
+  [[ -f "$pf" ]] || return 1
+  local pid; pid="$(cat "$pf" 2>/dev/null)"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+valid_service() {
+  local s
+  for s in "${SERVICES[@]}"; do [[ "$s" == "$1" ]] && return 0; done
+  return 1
+}
+
+# ----------------------------------------------------------------- start ----
+start_one() {
+  local name="$1"
+  if is_running "$name"; then
+    log "${c_yel}already running${c_off}  $name (pid $(cat "$(pidfile "$name")"))"
+    return 0
+  fi
+
+  local cmd wd lf
+  cmd="$(cmd_for "$name")" || die "unknown service: $name"
+  wd="$(dir_for "$name")"
+  lf="$(logfile "$name")"
+
+  [[ -d "$wd" ]] || die "$name: working dir not found: $wd (set BACKEND_DIR=...)"
+
+  {
+    echo
+    echo "=================================================================="
+    echo "starting $name at $(date -Is)"
+    echo "cwd: $wd"
+    echo "cmd: $cmd"
+    echo "=================================================================="
+  } >>"$lf"
+
+  # setsid puts the process in its own process group so we can signal the
+  # whole tree (uv run spawns children) on stop.
+  if needs_gpu "$name"; then
+    CUDA_VISIBLE_DEVICES="$GPU" setsid nohup bash -c "cd '$wd' && exec $cmd" >>"$lf" 2>&1 &
+  else
+    setsid nohup bash -c "cd '$wd' && exec $cmd" >>"$lf" 2>&1 &
+  fi
+  local pid=$!
+  echo "$pid" >"$(pidfile "$name")"
+
+  sleep 1
+  if is_running "$name"; then
+    log "${c_grn}started${c_off}        $name (pid $pid) -> $lf"
+  else
+    log "${c_red}failed${c_off}         $name - last lines of $lf:"
+    tail -n 15 "$lf" >&2
+    rm -f "$(pidfile "$name")"
+    return 1
+  fi
+}
+
+# ------------------------------------------------------------------ stop ----
+stop_one() {
+  local name="$1" pf pid
+  pf="$(pidfile "$name")"
+
+  if ! is_running "$name"; then
+    [[ -f "$pf" ]] && rm -f "$pf"
+    log "${c_dim}not running${c_off}    $name"
+    return 0
+  fi
+
+  pid="$(cat "$pf")"
+  # Negative pid = whole process group.
+  kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+
+  local i
+  for i in {1..30}; do
+    is_running "$name" || break
+    sleep 0.5
+  done
+
+  if is_running "$name"; then
+    log "${c_yel}force killing${c_off}  $name (pid $pid)"
+    kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    sleep 1
+  fi
+
+  rm -f "$pf"
+  log "${c_grn}stopped${c_off}        $name"
+}
+
+# ---------------------------------------------------------------- status ----
+status() {
+  printf '%-10s %-12s %-8s %-10s %s\n' SERVICE STATUS PID UPTIME LOG
+  local name pid up rss
+  for name in "${SERVICES[@]}"; do
+    if is_running "$name"; then
+      pid="$(cat "$(pidfile "$name")")"
+      up="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')"
+      printf '%-10s %b%-12s%b %-8s %-10s %s\n' \
+        "$name" "$c_grn" running "$c_off" "$pid" "${up:-?}" "$(logfile "$name")"
+    else
+      printf '%-10s %b%-12s%b %-8s %-10s %s\n' \
+        "$name" "$c_red" stopped "$c_off" - - "$(logfile "$name")"
+    fi
+  done
+}
+
+# ------------------------------------------------------------------ logs ----
+show_logs() {
+  local follow=0 lines=200 targets=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--follow) follow=1; shift ;;
+      -n) lines="$2"; shift 2 ;;
+      *) valid_service "$1" || die "unknown service: $1"; targets+=("$1"); shift ;;
+    esac
+  done
+  [[ ${#targets[@]} -eq 0 ]] && targets=("${SERVICES[@]}")
+
+  local files=() t
+  for t in "${targets[@]}"; do files+=("$(logfile "$t")"); done
+  for t in "${files[@]}"; do [[ -f "$t" ]] || : >"$t"; done
+
+  if [[ $follow -eq 1 ]]; then
+    tail -n "$lines" -f "${files[@]}"
+  else
+    tail -n "$lines" "${files[@]}"
+  fi
+}
+
+# ----------------------------------------------------------------- usage ----
+usage() {
+  cat <<EOF
+usage: $(basename "$0") <command> [options] [service...]
+
+commands:
+  --start [--deepseek KEY] [service...]   start services in the background
+  --stop  [service...]                    stop them (SIGTERM, then SIGKILL)
+  --restart [--deepseek KEY] [service...] stop + start
+  --status | --list                       show what's running
+  --logs [service...] [-f] [-n N]         tail logs (-f to follow)
+
+services: ${SERVICES[*]}   (default: all)
+
+working dirs:
+  worker,beat,main  $BACKEND_DIR
+  serve             $WEB_DIR
+  (override with BACKEND_DIR=... / WEB_DIR=...)
+
+notes:
+  --deepseek is only needed for 'serve'. The key is cached in
+  $ENV_FILE (chmod 600) so --restart works without repeating it.
+  You can also export DEEPSEEK_API_KEY instead.
+
+examples:
+  $(basename "$0") --start --deepseek sk-abc123
+  $(basename "$0") --restart worker
+  $(basename "$0") --logs serve -f
+  $(basename "$0") --stop
+EOF
+}
+
+# ------------------------------------------------------------------ main ----
+[[ $# -eq 0 ]] && { usage; exit 1; }
+
+CMD="$1"; shift
+
+# Pull --deepseek out of the args wherever it appears.
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --deepseek) DEEPSEEK_API_KEY="${2:-}"; shift 2 ;;
+    --deepseek=*) DEEPSEEK_API_KEY="${1#*=}"; shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+
+# Load / persist the key.
+if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+  umask 077; echo "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}" >"$ENV_FILE"
+elif [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
+# Resolve target services (logs handles its own arg parsing).
+TARGETS=()
+if [[ "$CMD" == "--logs" || "$CMD" == "logs" ]]; then
+  TARGETS=()
+elif [[ ${#ARGS[@]} -gt 0 ]]; then
+  for a in "${ARGS[@]}"; do
+    valid_service "$a" || die "unknown service '$a' (valid: ${SERVICES[*]})"
+    TARGETS+=("$a")
+  done
+else
+  TARGETS=("${SERVICES[@]}")
+fi
+
+case "$CMD" in
+  --start|start)
+    for s in "${TARGETS[@]}"; do
+      [[ "$s" == "serve" && -z "${DEEPSEEK_API_KEY:-}" ]] && \
+        die "serve needs a key: pass --deepseek sk-... or export DEEPSEEK_API_KEY"
+    done
+    for s in "${TARGETS[@]}"; do start_one "$s"; done
+    echo; status
+    ;;
+  --stop|stop)
+    # reverse order
+    for (( i=${#TARGETS[@]}-1; i>=0; i-- )); do stop_one "${TARGETS[i]}"; done
+    ;;
+  --restart|restart)
+    for (( i=${#TARGETS[@]}-1; i>=0; i-- )); do stop_one "${TARGETS[i]}"; done
+    for s in "${TARGETS[@]}"; do start_one "$s"; done
+    echo; status
+    ;;
+  --status|status|--list|list|--ps)
+    status
+    ;;
+  --logs|logs)
+    show_logs "${ARGS[@]+"${ARGS[@]}"}"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    die "unknown command '$CMD' (try --help)"
+    ;;
+esac
