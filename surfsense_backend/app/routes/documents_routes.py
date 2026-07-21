@@ -1,5 +1,6 @@
 # Force asyncio to use standard event loop before unstructured imports
 import asyncio
+import contextlib
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel as PydanticBaseModel, Field
@@ -330,6 +331,85 @@ async def create_documents_file_upload(
         raise HTTPException(
             status_code=500, detail=f"Failed to upload files: {e!s}"
         ) from e
+
+
+# Report-template conversions are interactive, so a tighter cap than the 500MB
+# document-upload limit: a format exemplar has no business being this large.
+EXTRACT_MARKDOWN_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+@router.post("/documents/extract-markdown")
+async def extract_markdown(
+    file: UploadFile,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Convert one uploaded file to Markdown and return it — nothing is stored.
+
+    Exists for the web client's report templates: the browser cannot read a
+    .docx, but the server's ETL service (docling) can. The file is staged to a
+    temp path, run through the same EtlPipelineService that document ingestion
+    uses, and discarded. Requires only an authenticated user — no search space
+    is touched.
+    """
+    import os
+    import tempfile
+
+    from app.etl_pipeline.etl_document import EtlRequest
+    from app.etl_pipeline.etl_pipeline_service import EtlPipelineService
+    from app.etl_pipeline.exceptions import (
+        EtlServiceUnavailableError,
+        EtlUnsupportedFileError,
+    )
+
+    filename = file.filename or "unknown"
+    content = await file.read()
+    if len(content) > EXTRACT_MARKDOWN_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File '{filename}' exceeds the "
+            f"{EXTRACT_MARKDOWN_MAX_BYTES // (1024 * 1024)} MB conversion limit.",
+        )
+    if not content:
+        raise HTTPException(status_code=400, detail=f"File '{filename}' is empty.")
+
+    def _write_temp() -> str:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=os.path.splitext(filename)[1]
+        ) as tmp:
+            tmp.write(content)
+            return tmp.name
+
+    temp_path = await asyncio.to_thread(_write_temp)
+    try:
+        # extract() is a coroutine whose docling call blocks the running loop,
+        # which is harmless in the Celery worker it was built for but not in
+        # the API process — so run it on its own loop in a worker thread.
+        def _convert():
+            return asyncio.run(
+                EtlPipelineService().extract(
+                    EtlRequest(file_path=temp_path, filename=filename)
+                )
+            )
+
+        result = await asyncio.to_thread(_convert)
+    except EtlUnsupportedFileError as e:
+        raise HTTPException(status_code=415, detail=str(e)) from e
+    except EtlServiceUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(f"extract-markdown failed for {filename}")
+        raise HTTPException(
+            status_code=500, detail=f"Conversion of '{filename}' failed: {e!s}"
+        ) from e
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(temp_path)
+
+    return {
+        "filename": filename,
+        "markdown": result.markdown_content,
+        "etl_service": result.etl_service,
+    }
 
 
 @router.get("/documents", response_model=PaginatedResponse[DocumentRead])

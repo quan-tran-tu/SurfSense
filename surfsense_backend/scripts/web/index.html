@@ -270,6 +270,15 @@
     </section>
 
     <section>
+      <h2>
+        Report templates
+        <button id="addTplBtn" class="sm">+ Add</button>
+      </h2>
+      <input id="tplPicker" type="file" accept=".docx,.pdf,.md,.markdown,.txt" multiple class="hide">
+      <div id="templates"></div>
+    </section>
+
+    <section>
       <h2>Imported <span class="ro">read-only</span></h2>
       <div id="imports"></div>
       <div class="stack" style="margin-top:8px">
@@ -366,6 +375,7 @@ const state = {
   isAdmin: false,       // is_superuser — gates the Admin panel (server also enforces it)
   relogged: false, busy: false,
   shares: [],       // [{path, token}] — the backend has no list endpoint, so we remember
+  templates: [],    // [{id, name, outline, content}] — report format exemplars, browser-only
 };
 
 const readPrefs = () => {
@@ -387,6 +397,7 @@ function savePrefs() {
       shares: state.shares,
       threadId: state.threadId,
       threadTitle: state.threadTitle,
+      templates: state.templates,
     };
   }
   localStorage.setItem(LS, JSON.stringify({
@@ -404,6 +415,7 @@ function adoptUser(email) {
   state.shares = mine.shares ?? [];
   state.threadId = mine.threadId ?? null;
   state.threadTitle = mine.threadTitle ?? "";
+  state.templates = mine.templates ?? [];
 }
 
 function loadPrefs() {
@@ -912,6 +924,132 @@ async function removeImport(link) {
   await renderImports();
 }
 
+/* -------------------------------------------------------------- templates */
+//
+// Report templates are exemplar reports the user uploads; /report t<id> makes
+// generate_report follow their structure and style. They are per-user browser
+// state (like shares): the backend has no template storage, and the format
+// reaches the model inside the /report directive.
+//
+// .docx is the preferred format — real Vietnamese reports live in Word — and
+// the browser can't read it, so those (and .pdf) are converted server-side by
+// POST /documents/extract-markdown, which runs the backend's ETL service
+// (docling). .md/.txt are accepted too and read locally.
+
+const TPL_TEXT_EXT = /\.(md|markdown|txt)$/i;   // readable in the browser
+const TPL_CONVERT_EXT = /\.(docx|pdf)$/i;       // server-converted via docling
+const TPL_NAME_EXT = /\.(docx|pdf|md|markdown|txt)$/i;
+
+const TPL_MAX_BYTES = 20 * 1024 * 1024;  // matches the backend conversion cap
+const TPL_STORE_CHARS = 20000;      // how much of the template body we keep
+const TPL_PROMPT_CHARS = 4000;      // style excerpt embedded in the directive
+const TPL_MAX_SECTIONS = 40;
+
+/**
+ * Pull the section skeleton out of a template. Vietnamese reports rarely use
+ * Markdown headings, so beyond `#` we accept the forms they actually use:
+ * "PHẦN I:", "Chương 2.", "I.", "1.2)", and short ALL-CAPS lines (checked with
+ * the vi locale so "MỞ ĐẦU" counts). Fewer than 2 hits means the file has no
+ * recognizable structure and is rejected as a template.
+ */
+function extractOutline(text) {
+  const outline = [];
+  let inFence = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("```")) { inFence = !inFence; continue; }
+    if (inFence || !line || line.length > 120) continue;
+
+    const isMd = /^#{1,6}\s+\S/.test(line);
+    const isNumbered =
+      /^(?:PHẦN|CHƯƠNG|MỤC|Phần|Chương|Mục)?\s*(?:[IVXLC]{1,7}|\d+(?:\.\d+){0,3})\s*[.):–-]\s+\S/.test(line);
+    const letters = (line.match(/\p{L}/gu) || []).length;
+    const isCaps = letters >= 3 && line.length <= 80 &&
+      line === line.toLocaleUpperCase("vi") && line !== line.toLocaleLowerCase("vi");
+
+    if (isMd || isNumbered || isCaps) outline.push(line);
+    if (outline.length >= TPL_MAX_SECTIONS) break;
+  }
+  return outline;
+}
+
+/** The template's text: read locally when the browser can, else convert server-side. */
+async function templateText(f) {
+  if (TPL_TEXT_EXT.test(f.name)) return (await f.text()).trim();
+  toast(`Converting "${f.name}" on the server…`, "ok", 5000);
+  const fd = new FormData();
+  fd.append("file", f, f.name);
+  const res = await apiJson("POST", "/api/v1/documents/extract-markdown", { body: fd });
+  return (res?.markdown ?? "").trim();
+}
+
+async function addTemplates(files) {
+  for (const f of files) {
+    if (!TPL_CONVERT_EXT.test(f.name) && !TPL_TEXT_EXT.test(f.name)) {
+      toast(`"${f.name}": upload the report as .docx (preferred) — .pdf, .md and .txt also work.`, "warn", 10000);
+      continue;
+    }
+    if (f.size > TPL_MAX_BYTES) {
+      toast(`"${f.name}" is over ${Math.round(TPL_MAX_BYTES / (1024 * 1024))}MB — too large for a template.`, "warn");
+      continue;
+    }
+
+    let text;
+    try { text = await templateText(f); }
+    catch (e) {
+      toast(`Could not convert "${f.name}": ${e.message}`, "err", 12000);
+      continue;
+    }
+
+    const outline = extractOutline(text);
+    if (outline.length < 2) {
+      toast(`"${f.name}" doesn't look like a valid report format: no section headings found. ` +
+            `A template needs headings such as "# Tiêu đề", "PHẦN I:", "1. Mở đầu", or ALL-CAPS lines.`, "warn", 12000);
+      continue;
+    }
+    const id = state.templates.reduce((m, t) => Math.max(m, t.id), 0) + 1;
+    state.templates.push({
+      id,
+      name: f.name.replace(TPL_NAME_EXT, ""),
+      outline,
+      content: text.slice(0, TPL_STORE_CHARS),
+    });
+    toast(`Template t${id} — "${f.name}" added (${outline.length} sections). Use it: /report t${id} <query>`, "ok", 9000);
+  }
+  savePrefs();
+  renderTemplates();
+}
+
+function removeTemplate(id) {
+  state.templates = state.templates.filter((t) => t.id !== id);
+  savePrefs();
+  renderTemplates();
+  toast(`Removed template t${id}.`);
+}
+
+function renderTemplates() {
+  const box = $("#templates");
+  box.replaceChildren();
+  if (!state.templates.length) {
+    box.innerHTML = '<div class="empty">none — upload a sample report (.docx preferred)</div>';
+    return;
+  }
+  for (const t of state.templates) {
+    const row = document.createElement("div");
+    row.className = "item";
+    row.title = "Click to preview the section outline";
+    row.innerHTML = `<span class="name"></span><button class="sm act danger" data-a="rm">✕</button>`;
+    row.querySelector(".name").textContent = `t${t.id} · ${t.name}`;
+    row.onclick = () => addSystemNote(
+      `Template t${t.id} — ${t.name}\n\nSections:\n${t.outline.join("\n")}\n\nUse it: /report t${t.id} <query>`);
+    row.querySelector('[data-a="rm"]').onclick = (e) => {
+      e.stopPropagation();
+      if (confirm(`Remove template t${t.id} "${t.name}"?`)) removeTemplate(t.id);
+    };
+    box.append(row);
+  }
+}
+
 /* ------------------------------------------------------------------- chat */
 
 /**
@@ -1167,11 +1305,12 @@ async function runCommand(line) {
   const cmd = (sp === -1 ? line : line.slice(0, sp)).toLowerCase();
   const arg = sp === -1 ? "" : line.slice(sp + 1).trim();
   switch (cmd) {
-    case "/report":  return reportCommand(arg);
-    case "/revise":  return reviseCommand(arg);
-    case "/export":  return exportCommand(arg);
-    case "/reports": return listReportsCommand();
-    case "/help":    return helpCommand();
+    case "/report":    return reportCommand(arg);
+    case "/revise":    return reviseCommand(arg);
+    case "/export":    return exportCommand(arg);
+    case "/reports":   return listReportsCommand();
+    case "/templates": return listTemplatesCommand();
+    case "/help":      return helpCommand();
     default:
       toast(`Unknown command ${cmd}. Try /help.`, "warn");
   }
@@ -1182,29 +1321,60 @@ async function runCommand(line) {
  * buildQuery(): the tool is two delegation hops away (supervisor → deliverables →
  * generate_report), so weaker models need to be told the exact path. kb_search
  * lets the tool pull its own sources from the knowledge base.
+ *
+ * Written in Vietnamese — the knowledge bases this deployment serves are
+ * Vietnamese, and the report must come out in Vietnamese by default. When a
+ * template is given, its outline + a style excerpt ride along in a
+ * <report_format> block that the agent must copy verbatim into
+ * user_instructions, which is the only argument of generate_report that
+ * reaches the report-writing prompt.
  */
-function buildReportQuery(request, parentId) {
+function buildReportQuery(request, parentId, tpl = null) {
   const revise = parentId
-    ? `\n- parent_report_id: ${parentId}  — this REVISES that existing report. Put the ` +
-      `requested change in user_instructions and preserve unrelated sections.`
+    ? `\n- parent_report_id: ${parentId} — đây là SỬA LẠI báo cáo đó. Đưa thay đổi được ` +
+      `yêu cầu vào user_instructions và giữ nguyên các phần không liên quan.`
     : "";
+  const tplInstr = tpl
+    ? `\n- user_instructions: chép NGUYÊN VĂN toàn bộ nội dung nằm giữa <report_format> và
+  </report_format> bên dưới (không tóm tắt, không lược bớt), cộng thêm mọi yêu cầu
+  khác của người dùng.`
+    : `\n- user_instructions: "Viết báo cáo bằng tiếng Việt." cộng thêm mọi yêu cầu khác
+  của người dùng.`;
+  const tplBlock = tpl
+    ? `
+
+<report_format>
+Báo cáo phải viết bằng tiếng Việt và PHẢI theo đúng định dạng của báo cáo mẫu
+"${tpl.name}" dưới đây: giữ đúng bố cục, thứ tự các phần và cách đặt tiêu đề; bắt
+chước văn phong, cách hành văn và cách trình bày của trích đoạn mẫu. Chỉ thay nội
+dung cho phù hợp với chủ đề được yêu cầu.
+
+Bố cục các phần của báo cáo mẫu:
+${tpl.outline.join("\n")}
+
+Trích đoạn của báo cáo mẫu (để bắt chước văn phong và cách viết):
+${tpl.content.slice(0, TPL_PROMPT_CHARS)}
+</report_format>`
+    : "";
+
   return `<instructions>
-The user wants a written REPORT saved as a deliverable artifact — not a chat answer.
-You MUST produce it by delegating to the \`deliverables\` subagent and calling the
-\`generate_report\` tool exactly once. Do not answer in prose, and do not merely
-summarize in chat.
+Người dùng muốn một BÁO CÁO được lưu thành sản phẩm (artifact) — không phải một câu
+trả lời chat. Bạn BẮT BUỘC tạo nó bằng cách ủy quyền cho subagent \`deliverables\` và
+gọi tool \`generate_report\` đúng MỘT lần. Không trả lời bằng văn xuôi, và không chỉ
+tóm tắt trong chat.
 
-Call generate_report with:
-- topic: a short title (<= 8 words) describing the report
+Gọi generate_report với:
+- topic: tiêu đề ngắn (tối đa 8 từ) mô tả báo cáo
 - source_strategy: "kb_search"
-- search_queries: 2-5 specific queries that retrieve what this report needs. If the
-  indexed documents are in another language, search in that language.
-- report_style: "detailed", unless the request clearly asks for a brief or
-  deep-research report${revise}
+- search_queries: 2-5 truy vấn cụ thể lấy đúng tư liệu mà báo cáo cần. Tài liệu trong
+  kho chủ yếu là tiếng Việt — hãy tìm bằng tiếng Việt; nếu tài liệu ở ngôn ngữ khác
+  thì tìm bằng ngôn ngữ đó.
+- report_style: "detailed", trừ khi yêu cầu nói rõ là báo cáo ngắn (brief) hoặc
+  nghiên cứu sâu (deep_research)${tplInstr}${revise}
 
-After the tool returns, reply with ONE short line naming the report. Never claim
-success without the tool's confirmation.
-</instructions>
+Sau khi tool trả về, trả lời đúng MỘT dòng ngắn bằng tiếng Việt nêu tên báo cáo.
+Không bao giờ báo thành công khi tool chưa xác nhận.
+</instructions>${tplBlock}
 
 <report_request>
 ${request}
@@ -1233,12 +1403,23 @@ async function newestReportSince(beforeId) {
 }
 
 async function reportCommand(request, parentId = null) {
-  if (!request) { toast("Usage: /report <what the report should cover>", "warn"); return; }
+  if (!request) { toast("Usage: /report [t<id>] <what the report should cover>", "warn"); return; }
+
+  // "/report t2 <query>" formats the report after uploaded template t2. Only the
+  // /report form takes a template — a revision keeps its parent's structure.
+  let tpl = null;
+  const m = parentId ? null : request.match(/^t(\d+)(?:\s+([\s\S]*))?$/i);
+  if (m) {
+    tpl = state.templates.find((t) => t.id === Number(m[1]));
+    if (!tpl) { toast(`No template t${m[1]}. /templates lists what you have.`, "warn"); return; }
+    request = (m[2] ?? "").trim();
+    if (!request) { toast(`Usage: /report t${tpl.id} <what the report should cover>`, "warn"); return; }
+  }
   const before = (await threadReports()).reduce((m, r) => Math.max(m, r.id), 0);
 
   await ask(request, {
-    display: (parentId ? `/revise ${parentId} ` : "/report ") + request,
-    query: buildReportQuery(request, parentId),
+    display: (parentId ? `/revise ${parentId} ` : `/report ${tpl ? `t${tpl.id} ` : ""}`) + request,
+    query: buildReportQuery(request, parentId, tpl),
     onDone: async ({ setStatus }) => {
       const rep = await newestReportSince(before);
       if (!rep) {
@@ -1341,13 +1522,27 @@ async function listReportsCommand() {
     "\n\nDownload: /export <id> <pdf|docx|html|latex|epub|odt|plain|md>");
 }
 
+async function listTemplatesCommand() {
+  if (!state.templates.length) {
+    addSystemNote("No report templates uploaded yet. Add one in the sidebar " +
+      "(Report templates → + Add): a sample report as .docx (preferred), .pdf, .md or .txt, " +
+      "with clear section headings.");
+    return;
+  }
+  addSystemNote("Report templates:\n" +
+    state.templates.map((t) => `t${t.id} — ${t.name} (${t.outline.length} sections)`).join("\n") +
+    "\n\nUse one: /report t<id> <what the report should cover>");
+}
+
 function helpCommand() {
   addSystemNote([
     "Chat commands:",
-    "  /report <query>          write a Markdown report from your knowledge base",
+    "  /report [t<id>] <query>  write a Markdown report from your knowledge base;",
+    "                           t<id> formats it after an uploaded template",
     "  /revise [id] <changes>   revise a report (defaults to the last one made here)",
     "  /export [id] <format>    download a report — pdf, docx, html, latex, epub, odt, plain, md",
     "  /reports                 list the reports in this session",
+    "  /templates               list your uploaded report templates",
     "  /help                    show this",
     "",
     "Anything without a leading / is asked against your knowledge base.",
@@ -1815,6 +2010,7 @@ async function start() {
   await renderFolders();
   await renderImports();
   renderShares();
+  renderTemplates();
   renderContext();
   await detectAdmin();
   showApp();
@@ -1912,6 +2108,14 @@ function init() {
 
   $("#addFolderBtn").onclick = () => $("#folderPicker").click();
   $("#folderPicker").onchange = (e) => onFolderPicked(e.target);
+
+  $("#addTplBtn").onclick = () => $("#tplPicker").click();
+  $("#tplPicker").onchange = (e) => {
+    // Same live-FileList trap as the folder picker: copy before clearing.
+    const files = Array.from(e.target.files);
+    e.target.value = "";
+    if (files.length) guard(() => addTemplates(files));
+  };
 
   $("#importBtn").onclick = () => {
     const token = $("#importToken").value.trim();

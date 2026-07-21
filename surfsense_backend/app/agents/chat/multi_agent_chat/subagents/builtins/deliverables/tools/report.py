@@ -66,21 +66,20 @@ def _render_kb_hits_for_report(hits: list[Any]) -> str:
 # Reusable formatting instructions appended to section-level and review prompts.
 
 _FORMATTING_RULES = """\
-- IMPORTANT: Output raw Markdown directly. Do NOT wrap the entire output in a \
-code fence (e.g. ```markdown, ````markdown, or any backtick fence). Individual \
-code examples and diagrams inside the report should still use fenced code blocks, \
-but the report itself must NOT be enclosed in one.
-- Maintain proper Markdown formatting throughout.
-- When including code examples, ALWAYS format them as proper fenced code blocks \
-with the correct language identifier (e.g. ```java, ```python). Code inside code \
-blocks MUST have proper line breaks and indentation — NEVER put multiple statements \
-on a single line. Each statement, brace, and logical block must be on its own line \
-with correct indentation.
-- When including Mermaid diagrams, use ```mermaid fenced code blocks. Each Mermaid \
-statement MUST be on its own line — NEVER use semicolons to join multiple statements \
-on one line. For line breaks inside node labels, use <br> (NOT <br/>).
-- When including mathematical formulas or equations, ALWAYS use LaTeX notation. \
-NEVER use backtick code spans or Unicode symbols for math."""
+- QUAN TRỌNG: Xuất Markdown thô trực tiếp. KHÔNG bọc toàn bộ đầu ra trong một khối \
+code (ví dụ ```markdown, ````markdown hay bất kỳ hàng rào backtick nào). Các ví dụ \
+code và sơ đồ bên trong báo cáo vẫn dùng khối code có rào, nhưng bản thân báo cáo \
+KHÔNG được nằm trong một khối như vậy.
+- Giữ định dạng Markdown chuẩn xuyên suốt báo cáo.
+- Khi đưa ví dụ code, LUÔN trình bày trong khối code có rào với đúng định danh ngôn \
+ngữ (ví dụ ```java, ```python). Code trong khối PHẢI xuống dòng và thụt lề đúng — \
+KHÔNG BAO GIỜ gộp nhiều câu lệnh trên một dòng. Mỗi câu lệnh, dấu ngoặc và khối \
+logic phải nằm trên dòng riêng với thụt lề chính xác.
+- Khi vẽ sơ đồ Mermaid, dùng khối ```mermaid. Mỗi câu lệnh Mermaid PHẢI nằm trên \
+một dòng riêng — KHÔNG dùng dấu chấm phẩy để nối nhiều câu lệnh trên một dòng. \
+Xuống dòng trong nhãn nút dùng <br> (KHÔNG dùng <br/>).
+- Công thức và phương trình toán học LUÔN viết bằng ký hiệu LaTeX. KHÔNG dùng \
+code span hay ký tự Unicode cho toán."""
 
 # ─── Standard Report Footer ─────────────────────────────────────────────────
 # Appended to every generated report after content generation.
@@ -89,39 +88,39 @@ _REPORT_FOOTER = "Powered by SurfSense AI."
 
 # ─── Prompt: Single-Shot Report Generation ───────────────────────────────────
 
-_REPORT_PROMPT = """You are an expert report writer. Generate a comprehensive Markdown report.
+_REPORT_PROMPT = """Bạn là một chuyên gia viết báo cáo. Hãy viết một báo cáo Markdown toàn diện, BẰNG TIẾNG VIỆT (trừ khi Hướng dẫn bổ sung yêu cầu ngôn ngữ khác).
 
-**Topic:** {topic}
-**Report Style:** {report_style}
+**Chủ đề:** {topic}
+**Kiểu báo cáo:** {report_style}
 {user_instructions_section}
 {previous_version_section}
 
-**Source Content:**
+**Nội dung nguồn:**
 {source_content}
 
 ---
 
 {length_instruction}
 
-Write a well-structured Markdown report with a # title, executive summary, organized sections, and conclusion. Cite facts from the source content. Be thorough and professional.
+Viết một báo cáo Markdown có cấu trúc tốt: tiêu đề mức #, phần tóm tắt, các mục được tổ chức hợp lý và kết luận. Nếu Hướng dẫn bổ sung mô tả một định dạng/bố cục báo cáo mẫu thì PHẢI theo đúng bố cục, cách đặt tiêu đề và văn phong đó thay vì bố cục mặc định. Dẫn các sự kiện, số liệu từ nội dung nguồn. Viết kỹ lưỡng và chuyên nghiệp.
 
 {formatting_rules}
 """
 
 # ─── Prompt: Full-Document Revision (fallback when section-level fails) ──────
 
-_REVISION_PROMPT = """You are an expert report editor. Apply ONLY the requested changes — do NOT rewrite from scratch.
+_REVISION_PROMPT = """Bạn là một biên tập viên báo cáo chuyên nghiệp. CHỈ thực hiện các thay đổi được yêu cầu — KHÔNG viết lại từ đầu.
 
-**Topic:** {topic}
-**Report Style:** {report_style}
-**Modification Instructions:** {user_instructions_section}
+**Chủ đề:** {topic}
+**Kiểu báo cáo:** {report_style}
+**Yêu cầu chỉnh sửa:** {user_instructions_section}
 
-**Source Content (use if relevant):**
+**Nội dung nguồn (dùng nếu liên quan):**
 {source_content}
 
 ---
 
-**EXISTING REPORT:**
+**BÁO CÁO HIỆN TẠI:**
 
 {previous_report_content}
 
@@ -129,85 +128,85 @@ _REVISION_PROMPT = """You are an expert report editor. Apply ONLY the requested 
 
 {length_instruction}
 
-Preserve all structure and content not affected by the modification.
+Giữ nguyên toàn bộ cấu trúc và nội dung không bị ảnh hưởng bởi yêu cầu chỉnh sửa. Giữ nguyên ngôn ngữ của báo cáo hiện tại trừ khi được yêu cầu đổi.
 
 {formatting_rules}
 """
 
 # ─── Prompt: Section-Level Revision — Identify Affected Sections ─────────────
 
-_IDENTIFY_SECTIONS_PROMPT = """You are analyzing a Markdown report to determine which sections need modification based on the user's request.
+_IDENTIFY_SECTIONS_PROMPT = """Bạn đang phân tích một báo cáo Markdown để xác định những phần (section) cần chỉnh sửa theo yêu cầu của người dùng.
 
-**User's Modification Request:** {user_instructions}
+**Yêu cầu chỉnh sửa của người dùng:** {user_instructions}
 
-**Report Sections (indexed starting at 0):**
+**Các phần của báo cáo (đánh chỉ số từ 0):**
 {sections_listing}
 
 ---
 
-Determine which sections need to be modified, added, or removed to fulfill the user's request.
+Xác định những phần cần sửa, thêm hoặc xóa để đáp ứng yêu cầu của người dùng.
 
-Return ONLY a JSON object with these fields:
-- "modify": Array of section indices (0-based) that need content changes
-- "add": Array of objects like {{"after_index": 2, "heading": "## New Section Title", "description": "What this section should cover"}} for new sections to insert
-- "remove": Array of section indices to remove entirely (use sparingly)
-- "reasoning": A brief explanation of your decisions
+CHỈ trả về một đối tượng JSON với các trường sau:
+- "modify": mảng chỉ số (bắt đầu từ 0) của các phần cần sửa nội dung
+- "add": mảng các đối tượng dạng {{"after_index": 2, "heading": "## Tiêu đề phần mới", "description": "Phần này cần trình bày gì"}} cho các phần mới cần chèn
+- "remove": mảng chỉ số của các phần cần xóa hẳn (hạn chế dùng)
+- "reasoning": giải thích ngắn gọn quyết định của bạn
 
-Guidelines:
-- If the change is GLOBAL (e.g., "change the tone", "make the whole report shorter", "translate to Spanish"), include ALL section indices in "modify".
-- If the change is TARGETED (e.g., "expand the budget section", "fix the conclusion"), include ONLY the affected section indices.
-- For "add a section about X", use the "add" field with the appropriate insertion point.
-- Prefer modifying over removing+adding when possible.
+Hướng dẫn:
+- Nếu thay đổi mang tính TOÀN CỤC (ví dụ: "đổi giọng văn", "rút ngắn cả báo cáo", "dịch sang tiếng Anh"), đưa TẤT CẢ chỉ số vào "modify".
+- Nếu thay đổi mang tính CỤC BỘ (ví dụ: "mở rộng phần ngân sách", "sửa phần kết luận"), CHỈ đưa các chỉ số bị ảnh hưởng.
+- Với "thêm một phần về X", dùng trường "add" với vị trí chèn phù hợp.
+- Ưu tiên sửa thay vì xóa rồi thêm mới khi có thể.
 
-Return ONLY valid JSON, no markdown fences:
+CHỈ trả về JSON hợp lệ, không bọc trong khối markdown:
 """
 
 # ─── Prompt: Section-Level Revision — Revise a Single Section ────────────────
 
-_REVISE_SECTION_PROMPT = """Revise ONLY this section based on the instructions. If the instructions don't apply, return it UNCHANGED.
+_REVISE_SECTION_PROMPT = """CHỈ chỉnh sửa phần dưới đây theo yêu cầu. Nếu yêu cầu không liên quan đến phần này, trả lại NGUYÊN VĂN không đổi.
 
-**Modification Instructions:** {user_instructions}
+**Yêu cầu chỉnh sửa:** {user_instructions}
 
-**Current Section:**
+**Phần hiện tại:**
 {section_content}
 
-**Context (surrounding sections — for coherence only, do NOT output them):**
+**Ngữ cảnh (các phần xung quanh — chỉ để giữ mạch văn, KHÔNG xuất chúng ra):**
 {context_sections}
 
-**Source Content:**
+**Nội dung nguồn:**
 {source_content}
 
 ---
 
-Keep the same heading and heading level. Preserve content not affected by the modification.
+Giữ nguyên tiêu đề và cấp tiêu đề của phần. Giữ nguyên nội dung không bị ảnh hưởng bởi yêu cầu chỉnh sửa. Giữ nguyên ngôn ngữ của báo cáo trừ khi được yêu cầu đổi.
 {formatting_rules}
 """
 
 # ─── Prompt: New Section Generation (for section-level add) ─────────────────
 
-_NEW_SECTION_PROMPT = """You are an expert report writer. Write a new section to be inserted into an existing report.
+_NEW_SECTION_PROMPT = """Bạn là một chuyên gia viết báo cáo. Hãy viết một phần mới để chèn vào một báo cáo có sẵn, dùng đúng ngôn ngữ của báo cáo đó (mặc định là tiếng Việt).
 
-**Report Topic:** {topic}
-**Report Style:** {report_style}
-**Section Heading:** {heading}
-**Section Goal:** {description}
-**User Instructions:** {user_instructions}
+**Chủ đề báo cáo:** {topic}
+**Kiểu báo cáo:** {report_style}
+**Tiêu đề phần:** {heading}
+**Mục tiêu của phần:** {description}
+**Yêu cầu của người dùng:** {user_instructions}
 
-**Surrounding Context:**
+**Ngữ cảnh xung quanh:**
 {context_sections}
 
-**Source Content:**
+**Nội dung nguồn:**
 {source_content}
 
 ---
 
-**Rules:**
-1. Write ONLY this section, starting with the heading "{heading}".
-2. Ensure the section flows naturally with the surrounding context.
-3. Be comprehensive — cover the topic described above.
+**Quy tắc:**
+1. CHỈ viết phần này, bắt đầu bằng tiêu đề "{heading}".
+2. Đảm bảo phần mới liền mạch với ngữ cảnh xung quanh.
+3. Viết đầy đủ — bao quát trọn vẹn chủ đề mô tả ở trên.
 {formatting_rules}
 
-Write the new section now:
+Viết phần mới ngay bây giờ:
 """
 
 
@@ -335,7 +334,7 @@ async def _revise_with_sections(
 
     sections_listing = ""
     for i, sec in enumerate(sections):
-        heading = sec["heading"] or "(preamble — content before first heading)"
+        heading = sec["heading"] or "(phần mở đầu — nội dung trước tiêu đề đầu tiên)"
         body_preview = (
             sec["body"][:200] + "..." if len(sec["body"]) > 200 else sec["body"]
         )
@@ -447,15 +446,15 @@ async def _revise_with_sections(
             prev_preview = prev["body"][:300] + (
                 "..." if len(prev["body"]) > 300 else ""
             )
-            context_parts.append(
-                f"**Previous section:** {prev['heading']}\n{prev_preview}"
-            )
+            context_parts.append(f"**Phần trước:** {prev['heading']}\n{prev_preview}")
         if idx < len(sections) - 1:
             nxt = sections[idx + 1]
             nxt_preview = nxt["body"][:300] + ("..." if len(nxt["body"]) > 300 else "")
-            context_parts.append(f"**Next section:** {nxt['heading']}\n{nxt_preview}")
+            context_parts.append(f"**Phần sau:** {nxt['heading']}\n{nxt_preview}")
         context = (
-            "\n\n".join(context_parts) if context_parts else "(No surrounding sections)"
+            "\n\n".join(context_parts)
+            if context_parts
+            else "(Không có phần xung quanh)"
         )
 
         revise_prompt = _REVISE_SECTION_PROMPT.format(
@@ -489,7 +488,7 @@ async def _revise_with_sections(
     ):
         current_op += 1
         after_idx = add_info.get("after_index", len(revised_sections) - 1)
-        heading = add_info.get("heading", "## New Section")
+        heading = add_info.get("heading", "## Phần mới")
         description = add_info.get("description", "")
 
         plain_heading = re.sub(r"^#+\s*", "", heading).strip()
@@ -505,13 +504,13 @@ async def _revise_with_sections(
         if 0 <= after_idx < len(revised_sections):
             before_sec = revised_sections[after_idx]
             ctx_parts.append(
-                f"**Section before:** {before_sec['heading']}\n{before_sec['body'][:300]}"
+                f"**Phần đứng trước:** {before_sec['heading']}\n{before_sec['body'][:300]}"
             )
         insert_idx = min(after_idx + 1, len(revised_sections))
         if insert_idx < len(revised_sections):
             after_sec = revised_sections[insert_idx]
             ctx_parts.append(
-                f"**Section after:** {after_sec['heading']}\n{after_sec['body'][:300]}"
+                f"**Phần đứng sau:** {after_sec['heading']}\n{after_sec['body'][:300]}"
             )
 
         new_prompt = _NEW_SECTION_PROMPT.format(
@@ -520,7 +519,7 @@ async def _revise_with_sections(
             heading=heading,
             description=description,
             user_instructions=user_instructions,
-            context_sections="\n\n".join(ctx_parts) if ctx_parts else "(None)",
+            context_sections="\n\n".join(ctx_parts) if ctx_parts else "(Không có)",
             source_content=source_content[:30000],
             formatting_rules=_FORMATTING_RULES,
         )
@@ -789,7 +788,7 @@ def create_generate_report_tool(
             user_instructions_section = ""
             if user_instructions:
                 user_instructions_section = (
-                    f"**Additional Instructions:** {user_instructions}"
+                    f"**Hướng dẫn bổ sung:** {user_instructions}"
                 )
 
             # ── Phase 1b: SOURCE COLLECTION (smart KB search) ────────────
@@ -870,7 +869,7 @@ def create_generate_report_tool(
                         if effective_source.strip():
                             effective_source = (
                                 effective_source
-                                + "\n\n--- Knowledge Base Search Results ---\n\n"
+                                + "\n\n--- Kết quả tìm kiếm trong kho tri thức ---\n\n"
                                 + kb_combined
                             )
                         else:
@@ -920,10 +919,10 @@ def create_generate_report_tool(
             length_instruction = ""
             if report_style == "brief":
                 length_instruction = (
-                    "**LENGTH CONSTRAINT (MANDATORY):** The user wants a SHORT report. "
-                    "Keep it concise — aim for ~400 words (~1 page) unless a different "
-                    "length is specified in the Additional Instructions above. "
-                    "Prioritize brevity over thoroughness. Do NOT write a long report."
+                    "**GIỚI HẠN ĐỘ DÀI (BẮT BUỘC):** Người dùng muốn một báo cáo NGẮN. "
+                    "Viết cô đọng — khoảng 400 từ (~1 trang), trừ khi Hướng dẫn bổ sung "
+                    "ở trên yêu cầu độ dài khác. Ưu tiên ngắn gọn hơn là đầy đủ. "
+                    "KHÔNG viết báo cáo dài."
                 )
 
             # ── Phase 2: LLM GENERATION (no DB connection held) ──────────
@@ -947,7 +946,7 @@ def create_generate_report_tool(
                     llm=llm,
                     parent_content=parent_report_content,
                     user_instructions=user_instructions
-                    or "Improve and refine the report.",
+                    or "Cải thiện và trau chuốt báo cáo.",
                     source_content=capped_source,
                     topic=topic,
                     report_style=report_style,
@@ -966,7 +965,7 @@ def create_generate_report_tool(
                         topic=topic,
                         report_style=report_style,
                         user_instructions_section=user_instructions_section
-                        or "Improve and refine the report.",
+                        or "Cải thiện và trau chuốt báo cáo.",
                         source_content=capped_source,
                         previous_report_content=parent_report_content,
                         length_instruction=length_instruction,
