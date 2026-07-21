@@ -251,7 +251,7 @@
       <h2>Session</h2>
       <div id="sessions"></div>
       <div class="stack" style="margin-top:8px">
-        <input id="newSession" placeholder="new session…">
+        <input id="newSession" placeholder="new session (name optional)…">
         <button id="newSessionBtn" class="sm">Start</button>
       </div>
     </section>
@@ -604,11 +604,17 @@ async function openThread(thread) {
   renderContext();
 }
 
+/**
+ * The name is optional. An unnamed session is opened with an empty threadTitle
+ * so keepTitle() stays out of the way and the backend's auto-titler names it
+ * from the first exchange — passing the server's "New Chat" placeholder through
+ * would pin the session to that placeholder forever.
+ */
 async function createSession(title) {
-  const thread = await apiJson("POST", "/api/v1/threads", {
-    json: { search_space_id: state.spaceId, title },
-  });
-  await openThread(thread);
+  const json = { search_space_id: state.spaceId };
+  if (title) json.title = title;
+  const thread = await apiJson("POST", "/api/v1/threads", { json });
+  await openThread(title ? thread : { ...thread, title: "" });
 }
 
 /** Resume the last thread we were in; fall back to the newest, else start one. */
@@ -616,7 +622,7 @@ async function resumeSession() {
   const threads = await listThreads();
   const mine = threads.find((t) => t.id === state.threadId) ?? threads[0];
   if (mine) await openThread(mine);
-  else await createSession("research");
+  else await createSession("");
 }
 
 /**
@@ -1119,13 +1125,16 @@ async function settleAnswer(bubble, streamed) {
 
 /**
  * The backend auto-titles a thread from its first exchange (title_gen.py), which
- * would silently rename the session the user named. Put our name back.
+ * would silently rename the session the user named. Put our name back. Unnamed
+ * sessions (empty threadTitle) skip the pin — the auto-title is welcome there —
+ * but still refresh the sidebar so it appears.
  */
 async function keepTitle() {
-  if (!state.threadTitle) return;
-  const mine = (await listThreads()).find((t) => t.id === state.threadId);
-  if (mine && mine.title !== state.threadTitle) {
-    await api("PUT", `/api/v1/threads/${state.threadId}`, { json: { title: state.threadTitle } });
+  if (state.threadTitle) {
+    const mine = (await listThreads()).find((t) => t.id === state.threadId);
+    if (mine && mine.title !== state.threadTitle) {
+      await api("PUT", `/api/v1/threads/${state.threadId}`, { json: { title: state.threadTitle } });
+    }
   }
   await renderSessions();
 }
@@ -1896,7 +1905,6 @@ function init() {
 
   $("#newSessionBtn").onclick = () => {
     const title = $("#newSession").value.trim();
-    if (!title) return;
     $("#newSession").value = "";
     guard(() => createSession(title));
   };
