@@ -6,8 +6,8 @@ scopes the folder subtree to that chat session. The unique index on
 owner, or two sessions could never upload a same-named root folder — the
 whole point of session scoping.
 
-Revision ID: 170
-Revises: 169
+Revision ID: 171
+Revises: 170
 """
 
 from collections.abc import Sequence
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "170"
-down_revision: str | None = "169"
+revision: str = "171"
+down_revision: str | None = "170"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
