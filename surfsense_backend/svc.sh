@@ -2,6 +2,7 @@
 # svc.sh - start/stop/inspect the 4 background services.
 #
 #   ./svc.sh --start --deepseek sk-...
+#   ./svc.sh --start --vllm Qwen2.5-7B --vllm_port 8001
 #   ./svc.sh --stop
 #   ./svc.sh --status
 #   ./svc.sh --logs worker -f
@@ -49,7 +50,12 @@ cmd_for() {
     worker) echo "uv run celery -A celery_worker.celery_app worker --loglevel=info --concurrency=1 --pool=solo --queues=${DEFAULT_Q},${DEFAULT_Q}.connectors,${DEFAULT_Q}.gateway" ;;
     beat)   echo "uv run celery -A celery_worker.celery_app beat --loglevel=info" ;;
     main)   echo "uv run main.py" ;;
-    serve)  echo "uv run python serve.py ${SERVE_PORT} --deepseek ${DEEPSEEK_API_KEY:-}" ;;
+    serve)
+      if [[ "${SERVE_MODE:-deepseek}" == "vllm" ]]; then
+        echo "uv run python serve.py ${SERVE_PORT} --vllm ${VLLM_MODEL:-} --vllm_port ${VLLM_PORT:-}"
+      else
+        echo "uv run python serve.py ${SERVE_PORT} --deepseek ${DEEPSEEK_API_KEY:-}"
+      fi ;;
     *)      return 1 ;;
   esac
 }
@@ -200,11 +206,16 @@ usage() {
 usage: $(basename "$0") <command> [options] [service...]
 
 commands:
-  --start [--deepseek KEY] [service...]   start services in the background
+  --start [model flags] [service...]      start services in the background
   --stop  [service...]                    stop them (SIGTERM, then SIGKILL)
-  --restart [--deepseek KEY] [service...] stop + start
+  --restart [model flags] [service...]    stop + start
   --status | --list                       show what's running
   --logs [service...] [-f] [-n N]         tail logs (-f to follow)
+
+model flags (pick one backend):
+  --deepseek KEY                          DeepSeek API
+  --vllm MODEL --vllm_port PORT           local vLLM container (OpenAI endpoint);
+                                          --deepseek wins when both are given
 
 services: ${SERVICES[*]}   (default: all)
 
@@ -214,12 +225,13 @@ working dirs:
   (override with BACKEND_DIR=... / WEB_DIR=...)
 
 notes:
-  --deepseek is only needed for 'serve'. The key is cached in
-  $ENV_FILE (chmod 600) so --restart works without repeating it.
-  You can also export DEEPSEEK_API_KEY instead.
+  The model flags are only needed for 'serve'. They are cached in
+  $ENV_FILE (chmod 600) so --restart works without repeating them.
+  You can also export DEEPSEEK_API_KEY, or VLLM_MODEL + VLLM_PORT, instead.
 
 examples:
   $(basename "$0") --start --deepseek sk-abc123
+  $(basename "$0") --start --vllm Qwen2.5-7B-Instruct --vllm_port 8001
   $(basename "$0") --restart worker
   $(basename "$0") --logs serve -f
   $(basename "$0") --stop
@@ -231,22 +243,48 @@ EOF
 
 CMD="$1"; shift
 
-# Pull --deepseek out of the args wherever it appears.
+# Pull the model flags out of the args wherever they appear. A flag passed on
+# this invocation also picks the serve mode; --deepseek wins over --vllm.
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --deepseek) DEEPSEEK_API_KEY="${2:-}"; shift 2 ;;
-    --deepseek=*) DEEPSEEK_API_KEY="${1#*=}"; shift ;;
+    --deepseek) DEEPSEEK_API_KEY="${2:-}"; PASSED_MODE="deepseek"; shift 2 ;;
+    --deepseek=*) DEEPSEEK_API_KEY="${1#*=}"; PASSED_MODE="deepseek"; shift ;;
+    --vllm) VLLM_MODEL="${2:-}"; PASSED_VLLM=1; shift 2 ;;
+    --vllm=*) VLLM_MODEL="${1#*=}"; PASSED_VLLM=1; shift ;;
+    --vllm_port|--vllm-port) VLLM_PORT="${2:-}"; shift 2 ;;
+    --vllm_port=*|--vllm-port=*) VLLM_PORT="${1#*=}"; shift ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
+[[ -z "${PASSED_MODE:-}" && -n "${PASSED_VLLM:-}" ]] && PASSED_MODE="vllm"
 
-# Load / persist the key.
-if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
-  umask 077; echo "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}" >"$ENV_FILE"
-elif [[ -f "$ENV_FILE" ]]; then
+# Load the cached config, without letting it override what was just passed.
+if [[ -f "$ENV_FILE" ]]; then
+  _dk="${DEEPSEEK_API_KEY:-}" _vm="${VLLM_MODEL:-}" _vp="${VLLM_PORT:-}"
   # shellcheck disable=SC1090
   source "$ENV_FILE"
+  [[ -n "$_dk" ]] && DEEPSEEK_API_KEY="$_dk"
+  [[ -n "$_vm" ]] && VLLM_MODEL="$_vm"
+  [[ -n "$_vp" ]] && VLLM_PORT="$_vp"
+fi
+SERVE_MODE="${PASSED_MODE:-${SERVE_MODE:-}}"
+if [[ -z "$SERVE_MODE" ]]; then
+  # Legacy cache or env vars only: infer from what we have.
+  if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then SERVE_MODE="deepseek"
+  elif [[ -n "${VLLM_MODEL:-}" ]];    then SERVE_MODE="vllm"
+  fi
+fi
+
+# Persist everything we now know, so --restart works without repeating flags.
+if [[ -n "${DEEPSEEK_API_KEY:-}" || -n "${VLLM_MODEL:-}" ]]; then
+  umask 077
+  {
+    echo "SERVE_MODE=${SERVE_MODE}"
+    [[ -n "${DEEPSEEK_API_KEY:-}" ]] && echo "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}"
+    [[ -n "${VLLM_MODEL:-}" ]] && echo "VLLM_MODEL=${VLLM_MODEL}"
+    [[ -n "${VLLM_PORT:-}" ]] && echo "VLLM_PORT=${VLLM_PORT}"
+  } >"$ENV_FILE"
 fi
 
 # Resolve target services (logs handles its own arg parsing).
@@ -265,8 +303,19 @@ fi
 case "$CMD" in
   --start|start)
     for s in "${TARGETS[@]}"; do
-      [[ "$s" == "serve" && -z "${DEEPSEEK_API_KEY:-}" ]] && \
-        die "serve needs a key: pass --deepseek sk-... or export DEEPSEEK_API_KEY"
+      if [[ "$s" == "serve" ]]; then
+        case "$SERVE_MODE" in
+          deepseek)
+            [[ -n "${DEEPSEEK_API_KEY:-}" ]] || \
+              die "serve needs a key: pass --deepseek sk-... or export DEEPSEEK_API_KEY" ;;
+          vllm)
+            [[ -n "${VLLM_MODEL:-}" ]] || die "serve needs a model: pass --vllm <model_name>"
+            [[ -n "${VLLM_PORT:-}" ]] || \
+              die "serve needs the vLLM port: pass --vllm_port <port> (the vLLM container's OpenAI port)" ;;
+          *)
+            die "serve needs a model backend: --deepseek sk-... or --vllm <model_name> --vllm_port <port>" ;;
+        esac
+      fi
     done
     for s in "${TARGETS[@]}"; do start_one "$s"; done
     echo; status

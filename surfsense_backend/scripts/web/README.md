@@ -10,12 +10,20 @@ Use it when you want a UI but not the full `surfsense_web` Next.js app.
 ## Run it
 
 ```sh
-./serve.py --deepseek sk-...          # http://localhost:3000
-DEEPSEEK_API_KEY=sk-... ./serve.py    # same, from the environment
+./serve.py --deepseek sk-...                     # DeepSeek API, http://localhost:3000
+./serve.py --vllm Qwen2.5-7B --vllm_port 8001    # local vLLM container instead
+DEEPSEEK_API_KEY=sk-... ./serve.py               # same, from the environment
 ```
 
 Then open <http://localhost:3000>, enter your email and password, and hit
 **Register** (first time) or **Sign in**.
+
+`--vllm` (used when no `--deepseek` is given) points the page at a vLLM
+container's OpenAI-compatible endpoint: the model connection is created with
+`base_url = http://localhost:<vllm_port>/v1` — localhost *as the backend sees
+it*, since the backend is what dials the model — and the placeholder key
+`EMPTY`, so the login screen asks for no key at all. The model and base-URL
+fields under *Advanced* show the injected values and are locked.
 
 Given a key, `serve.py` bakes it into the page as it serves it, so the login
 screen never asks for one and the key is never written to `localStorage`. Since

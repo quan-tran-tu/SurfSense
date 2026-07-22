@@ -223,7 +223,7 @@
   <input id="password" type="password" autocomplete="current-password" placeholder="min. 8 characters">
 
   <div id="apiKeyRow">
-    <label for="apiKey">DeepSeek API key <span title="Wires the chat model to your user. Stored server-side on a model connection scoped to your search space.">ⓘ</span></label>
+    <label for="apiKey">Model API key <span title="Wires the chat model to your user. Stored server-side on a model connection scoped to your search space.">ⓘ</span></label>
     <input id="apiKey" type="password" placeholder="sk-...">
   </div>
 
@@ -357,13 +357,16 @@
 const $ = (sel) => document.querySelector(sel);
 const LS = "surfsense.mini";
 
-// serve.py --deepseek <key> rewrites the marker below into an assignment. Under a
-// plain static server it stays a comment, and the login screen asks for the key.
-// An injected key is deliberately NOT written to localStorage: it lives only in
-// the page that served it.
+// serve.py rewrites the marker below into assignments: --deepseek <key> injects
+// apiKey; --vllm <model> --vllm_port <port> injects apiKey ("EMPTY"), model and
+// modelBase. Under a plain static server it stays a comment, and the login
+// screen asks for the key. Injected values are deliberately NOT written to
+// localStorage: they live only in the page that served them.
 window.SS_CONFIG = window.SS_CONFIG || {};
 /*__SS_CONFIG__*/
 const INJECTED_KEY = window.SS_CONFIG.apiKey || "";
+const INJECTED_MODEL = window.SS_CONFIG.model || "";
+const INJECTED_BASE = window.SS_CONFIG.modelBase || "";
 
 const state = {
   backend: "http://localhost:8000",
@@ -403,7 +406,8 @@ function savePrefs() {
   localStorage.setItem(LS, JSON.stringify({
     backend: state.backend, email: state.email,
     apiKey: INJECTED_KEY ? "" : state.apiKey,
-    model: state.model, modelBase: state.modelBase,
+    model: INJECTED_MODEL ? "" : state.model,
+    modelBase: INJECTED_BASE ? "" : state.modelBase,
     forceSearch: state.forceSearch,
     byUser,
   }));
@@ -433,7 +437,10 @@ function loadPrefs() {
   }
 
   adoptUser(state.email);
-  if (INJECTED_KEY) state.apiKey = INJECTED_KEY;   // the served key always wins
+  // Served values always win; empty leftovers fall back to the DeepSeek defaults.
+  if (INJECTED_KEY) state.apiKey = INJECTED_KEY;
+  state.model = INJECTED_MODEL || state.model || "deepseek-chat";
+  state.modelBase = INJECTED_BASE || state.modelBase || "https://api.deepseek.com/v1";
 }
 
 function toast(msg, kind = "ok", ms = 6000) {
@@ -2031,8 +2038,8 @@ async function doAuth(mode) {
   Object.assign(state, {
     email, password, apiKey,
     backend: ($("#backend").value.trim() || "http://localhost:8000").replace(/\/$/, ""),
-    model: $("#model").value.trim() || "deepseek-chat",
-    modelBase: $("#modelBase").value.trim() || "https://api.deepseek.com/v1",
+    model: INJECTED_MODEL || $("#model").value.trim() || "deepseek-chat",
+    modelBase: INJECTED_BASE || $("#modelBase").value.trim() || "https://api.deepseek.com/v1",
   });
   savePrefs();
 
@@ -2064,8 +2071,10 @@ function init() {
   $("#modelBase").value = state.modelBase;
   $("#forceSearch").checked = state.forceSearch;
 
-  // The key came from the server, so don't ask for it (and don't show it).
+  // Whatever came from the server, don't ask for (and don't let it be edited).
   if (INJECTED_KEY) $("#apiKeyRow").classList.add("hide");
+  if (INJECTED_MODEL) { $("#model").value = INJECTED_MODEL; $("#model").disabled = true; }
+  if (INJECTED_BASE) { $("#modelBase").value = INJECTED_BASE; $("#modelBase").disabled = true; }
 
   // Origin is the whole ballgame: the backend's CSRF middleware only accepts an
   // allow-listed one, and file:// sends "null". Fail loudly rather than let every
