@@ -36,6 +36,7 @@ from .folders import (
     FolderMove,
     FolderRead,
     FolderReorder,
+    FolderScopeUpdate,
     FolderUpdate,
 )
 from .google_drive import DriveItem, GoogleDriveIndexingOptions, GoogleDriveIndexRequest
@@ -177,6 +178,7 @@ __all__ = [
     "FolderMove",
     "FolderRead",
     "FolderReorder",
+    "FolderScopeUpdate",
     "FolderShareCreate",
     "FolderShareRead",
     "FolderUpdate",

@@ -28,7 +28,7 @@ from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain_core.callbacks import adispatch_custom_event, dispatch_custom_event
 from langgraph.config import get_config
 from langgraph.runtime import Runtime
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,7 +44,9 @@ from app.agents.chat.multi_agent_chat.shared.state.filesystem_state import (
 from app.agents.chat.multi_agent_chat.shared.state.reducers import _CLEAR
 from app.agents.chat.runtime.path_resolver import (
     DOCUMENTS_ROOT,
+    folder_owner_thread_id,
     is_shared_path,
+    note_path_identifier,
     parse_documents_path,
     safe_folder_segment,
     virtual_path_to_doc,
@@ -81,33 +83,54 @@ def _basename(path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _session_visible(query, thread_id: int | None):
+    """Constrain a Folder query to this session's view; its own folders win ties."""
+    if thread_id is None:
+        return query
+    return query.where(
+        or_(
+            Folder.owner_thread_id.is_(None),
+            Folder.owner_thread_id == thread_id,
+        )
+    ).order_by((Folder.owner_thread_id == thread_id).desc())
+
+
 async def _ensure_folder_hierarchy(
     session: AsyncSession,
     *,
     search_space_id: int,
     created_by_id: str | None,
     folder_parts: list[str],
-) -> int | None:
+    thread_id: int | None = None,
+) -> tuple[int | None, int | None]:
     """Ensure a chain of folder names exists under the search space.
 
-    Returns the leaf folder id, or ``None`` if ``folder_parts`` is empty
-    (i.e. a document directly under ``/documents/``).
+    Returns ``(leaf folder id, leaf owner_thread_id)``, both ``None`` if
+    ``folder_parts`` is empty (a document directly under ``/documents/``).
+
+    Session scoping: lookups only see this session's folders plus space-wide
+    ones (another session's same-named folder must not be reused), and created
+    folders inherit their parent's owner so a subtree keeps one scope. A fresh
+    root-level folder is space-wide — the agent's own output areas stay visible
+    across sessions; only uploaded session folders are scoped.
     """
     if not folder_parts:
-        return None
+        return None, None
     parent_id: int | None = None
+    owner_thread_id: int | None = None
     for raw in folder_parts:
         name = safe_folder_segment(str(raw))
         query = select(Folder).where(
             Folder.search_space_id == search_space_id,
             Folder.name == name,
         )
+        query = _session_visible(query, thread_id)
         if parent_id is None:
             query = query.where(Folder.parent_id.is_(None))
         else:
             query = query.where(Folder.parent_id == parent_id)
         result = await session.execute(query)
-        folder = result.scalar_one_or_none()
+        folder = result.scalars().first()
         if folder is None:
             sibling_query = (
                 select(Folder.position).order_by(Folder.position.desc()).limit(1)
@@ -127,12 +150,14 @@ async def _ensure_folder_hierarchy(
                 parent_id=parent_id,
                 search_space_id=search_space_id,
                 created_by_id=created_by_id,
+                owner_thread_id=owner_thread_id,
                 updated_at=datetime.now(UTC),
             )
             session.add(folder)
             await session.flush()
         parent_id = folder.id
-    return parent_id
+        owner_thread_id = folder.owner_thread_id
+    return parent_id, owner_thread_id
 
 
 async def _resolve_folder_id(
@@ -140,11 +165,13 @@ async def _resolve_folder_id(
     *,
     search_space_id: int,
     folder_parts: list[str],
+    thread_id: int | None = None,
 ) -> int | None:
     """Look up an existing folder chain without creating anything.
 
-    Returns ``None`` if any segment is missing. Used by ``rmdir`` snapshot
-    capture and by parent-folder lookup at ``rmdir`` commit time.
+    Returns ``None`` if any segment is missing or (with ``thread_id``) belongs
+    to a different chat session. Used by ``rmdir`` snapshot capture and by
+    parent-folder lookup at ``rmdir`` commit time.
     """
     if not folder_parts:
         return None
@@ -155,13 +182,14 @@ async def _resolve_folder_id(
             Folder.search_space_id == search_space_id,
             Folder.name == name,
         )
+        query = _session_visible(query, thread_id)
         query = (
             query.where(Folder.parent_id.is_(None))
             if parent_id is None
             else query.where(Folder.parent_id == parent_id)
         )
         result = await session.execute(query)
-        folder = result.scalar_one_or_none()
+        folder = result.scalars().first()
         if folder is None:
             return None
         parent_id = folder.id
@@ -188,20 +216,25 @@ async def _create_document(
     content: str,
     search_space_id: int,
     created_by_id: str | None,
+    thread_id: int | None = None,
 ) -> Document:
     """Create a NOTE Document + Chunks for ``virtual_path``."""
     folder_parts, title = parse_documents_path(virtual_path)
     if not title:
         raise ValueError(f"invalid /documents path '{virtual_path}'")
-    folder_id = await _ensure_folder_hierarchy(
+    folder_id, folder_owner = await _ensure_folder_hierarchy(
         session,
         search_space_id=search_space_id,
         created_by_id=created_by_id,
         folder_parts=folder_parts,
+        thread_id=thread_id,
     )
+    # A session-scoped folder makes the same path reachable from several
+    # threads; the owner is mixed into the hash so their documents don't
+    # collide on the global unique constraint.
     unique_identifier_hash = generate_unique_identifier_hash(
         DocumentType.NOTE,
-        virtual_path,
+        note_path_identifier(virtual_path, folder_owner),
         search_space_id,
     )
     # Pre-check the path-derived unique_identifier_hash so a duplicate path
@@ -282,9 +315,10 @@ async def _update_document(
     metadata = dict(document.document_metadata or {})
     metadata["virtual_path"] = virtual_path
     document.document_metadata = metadata
+    folder_owner = await folder_owner_thread_id(session, document.folder_id)
     document.unique_identifier_hash = generate_unique_identifier_hash(
         DocumentType.NOTE,
-        virtual_path,
+        note_path_identifier(virtual_path, folder_owner),
         search_space_id,
     )
 
@@ -324,6 +358,7 @@ async def _apply_move(
     move: dict[str, Any],
     doc_id_by_path: dict[str, int],
     doc_id_path_tombstones: dict[str, int | None],
+    thread_id: int | None = None,
 ) -> dict[str, Any] | None:
     """Apply a single staged move; updates the in-memory mapping for chain resolution."""
     source = str(move.get("source") or "")
@@ -351,6 +386,7 @@ async def _apply_move(
             session,
             search_space_id=search_space_id,
             virtual_path=source,
+            thread_id=thread_id,
         )
     if document is not None and document.search_space_id != search_space_id:
         # Reachable through a share link, but not ours to reparent.
@@ -372,11 +408,12 @@ async def _apply_move(
     folder_parts, new_title = parse_documents_path(dest)
     if not new_title:
         return None
-    folder_id = await _ensure_folder_hierarchy(
+    folder_id, folder_owner = await _ensure_folder_hierarchy(
         session,
         search_space_id=search_space_id,
         created_by_id=created_by_id,
         folder_parts=folder_parts,
+        thread_id=thread_id,
     )
 
     document.title = new_title
@@ -386,7 +423,7 @@ async def _apply_move(
     document.document_metadata = metadata
     document.unique_identifier_hash = generate_unique_identifier_hash(
         DocumentType.NOTE,
-        dest,
+        note_path_identifier(dest, folder_owner),
         search_space_id,
     )
     document.updated_at = datetime.now(UTC)
@@ -890,11 +927,12 @@ async def commit_staged_filesystem_state(
                 folder_parts_full = _split_folder_path(folder_path)
                 if not folder_parts_full:
                     continue
-                folder_id = await _ensure_folder_hierarchy(
+                folder_id, _folder_owner = await _ensure_folder_hierarchy(
                     session,
                     search_space_id=search_space_id,
                     created_by_id=created_by_id,
                     folder_parts=folder_parts_full,
+                    thread_id=thread_id,
                 )
                 tree_changed = True
 
@@ -938,6 +976,7 @@ async def commit_staged_filesystem_state(
                                 session,
                                 search_space_id=search_space_id,
                                 virtual_path=source,
+                                thread_id=thread_id,
                             )
                         if document_pre is not None:
                             await _snapshot_document_pre_move(
@@ -956,6 +995,7 @@ async def commit_staged_filesystem_state(
                     move=move,
                     doc_id_by_path=doc_id_by_path,
                     doc_id_path_tombstones=doc_id_path_tombstones,
+                    thread_id=thread_id,
                 )
                 if applied:
                     applied_moves.append(applied)
@@ -1017,6 +1057,7 @@ async def commit_staged_filesystem_state(
                         session,
                         search_space_id=search_space_id,
                         virtual_path=path,
+                        thread_id=thread_id,
                     )
                     if existing is not None and (
                         existing.search_space_id != search_space_id
@@ -1090,6 +1131,7 @@ async def commit_staged_filesystem_state(
                                 content=content,
                                 search_space_id=search_space_id,
                                 created_by_id=created_by_id,
+                                thread_id=thread_id,
                             )
                     except ValueError as exc:
                         logger.warning(
@@ -1165,6 +1207,7 @@ async def commit_staged_filesystem_state(
                         session,
                         search_space_id=search_space_id,
                         virtual_path=final,
+                        thread_id=thread_id,
                     )
                 if document_to_delete is None:
                     logger.info(
@@ -1254,6 +1297,7 @@ async def commit_staged_filesystem_state(
                     session,
                     search_space_id=search_space_id,
                     folder_parts=folder_parts,
+                    thread_id=thread_id,
                 )
                 if folder_id is None:
                     logger.info(

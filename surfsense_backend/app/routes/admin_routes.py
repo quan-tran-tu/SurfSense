@@ -66,6 +66,7 @@ class AdminFolderRead(BaseModel):
     search_space_id: int
     search_space_name: str | None = None
     created_by_id: str | None = None
+    owner_thread_id: int | None = None
     created_at: datetime
 
     class Config:
@@ -265,10 +266,35 @@ async def list_user_folders(
             search_space_id=f.search_space_id,
             search_space_name=space_name,
             created_by_id=str(f.created_by_id) if f.created_by_id else None,
+            owner_thread_id=f.owner_thread_id,
             created_at=f.created_at,
         )
         for f, space_name in rows
     ]
+
+
+@router.patch("/folders/{folder_id}/scope")
+async def promote_folder_scope(
+    folder_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Promote any user's session-scoped folder to space-wide, bypassing membership.
+
+    Same operation as the owner's ``PATCH /folders/{id}/scope`` — clears the
+    session stamp on the subtree and rehashes the documents' identities.
+    """
+    from app.services.folder_scope_service import promote_folder_to_space
+
+    folder = await session.get(Folder, folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    result = await promote_folder_to_space(session, folder)
+    logger.info(
+        f"Admin {auth.user.email} promoted folder #{folder_id} to space-wide"
+    )
+    return {"message": f"Folder '{folder.name}' is now space-wide", **result}
 
 
 @router.delete("/folders/{folder_id}")

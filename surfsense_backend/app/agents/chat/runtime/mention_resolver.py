@@ -104,6 +104,7 @@ async def resolve_mentions(
     mentioned_documents: list[MentionedDocumentInfo] | None,
     mentioned_document_ids: list[int] | None = None,
     mentioned_folder_ids: list[int] | None = None,
+    thread_id: int | None = None,
 ) -> ResolvedMentionSet:
     """Resolve every @-mention chip on a turn into virtual paths.
 
@@ -151,7 +152,7 @@ async def resolve_mentions(
     if not doc_id_pool and not folder_id_pool:
         return ResolvedMentionSet()
 
-    index = await build_path_index(session, search_space_id)
+    index = await build_path_index(session, search_space_id, thread_id=thread_id)
 
     doc_rows: dict[int, Document] = {}
     if doc_id_pool:

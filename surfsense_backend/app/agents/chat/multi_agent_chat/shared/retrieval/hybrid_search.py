@@ -15,8 +15,9 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from app.agents.chat.runtime.path_resolver import current_thread_id
 from app.config import config
-from app.db import Chunk, Document, DocumentType
+from app.db import Chunk, Document, DocumentType, Folder
 from app.observability import metrics, otel
 from app.services.folder_sharing_service import linked_folder_ids_subquery
 from app.utils.perf import get_perf_logger
@@ -92,7 +93,9 @@ async def _search(
             config.embedding_model_instance.embed, query
         )
 
-    conditions = _base_conditions(search_space_id, scope, document_types)
+    conditions = _base_conditions(
+        search_space_id, scope, document_types, thread_id=current_thread_id()
+    )
     rows = await _fused_chunks(
         db_session,
         query=query,
@@ -120,6 +123,7 @@ def _base_conditions(
     search_space_id: int,
     scope: SearchScope,
     document_types: list[DocumentType] | None,
+    thread_id: int | None = None,
 ) -> list:
     """Filters shared by both search legs."""
     conditions = [
@@ -132,6 +136,23 @@ def _base_conditions(
         ),
         func.coalesce(Document.status["state"].astext, "ready") != "deleting",
     ]
+    if thread_id is not None:
+        # Session scoping: documents inside a folder owned by a *different* chat
+        # session are invisible here. Folderless documents keep their space-wide
+        # visibility (NOT IN would silently drop them on NULL). The hidden set
+        # only ever names this space's folders, so linked (foreign) documents
+        # are unaffected.
+        hidden_folders = select(Folder.id).where(
+            Folder.search_space_id == search_space_id,
+            Folder.owner_thread_id.is_not(None),
+            Folder.owner_thread_id != thread_id,
+        )
+        conditions.append(
+            or_(
+                Document.folder_id.is_(None),
+                Document.folder_id.notin_(hidden_folders),
+            )
+        )
     if document_types:
         conditions.append(Document.document_type.in_(document_types))
     if scope.document_ids:

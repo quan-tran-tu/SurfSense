@@ -619,7 +619,8 @@ async function openThread(thread) {
   state.threadTitle = thread.title;
   state.lastReportId = null;   // the /export|/revise default is per-thread; don't carry it across
   savePrefs();
-  await Promise.all([renderSessions(), loadHistory()]);
+  // renderFolders too: the "this session" badges depend on which thread is open.
+  await Promise.all([renderSessions(), loadHistory(), renderFolders()]);
   renderContext();
 }
 
@@ -816,11 +817,18 @@ async function ingest(fileList) {
   const { root, files, paths } = collectFiles(fileList);
   if (!files.length) { toast("No indexable files in that folder.", "warn"); return; }
 
+  // Uploads are scoped to the current chat session: only this session's agent
+  // sees the folder until it is promoted (⤴ in the Folders panel). Without an
+  // open session the upload falls back to space-wide, like before.
+  const threadId = state.threadId ?? null;
+
   // The KB label is the basename, never a full disk path: it becomes Folder.name,
   // which the agent sees as /documents/<name>/… — a full path would leak the
-  // machine's directory layout into every prompt.
-  const existing = (await watchedFolders() ?? []).find((f) => f.name === root);
-  if (existing && !confirm(`"${root}" is already indexed. Rebuild it? Its documents will be deleted and re-extracted.`)) return;
+  // machine's directory layout into every prompt. The duplicate check matches
+  // scope too: another session's "root" is a different folder, not a rebuild.
+  const existing = (await watchedFolders() ?? []).find(
+    (f) => f.name === root && (f.owner_thread_id ?? null) === threadId);
+  if (existing && !confirm(`"${root}" is already indexed${threadId ? " in this session" : ""}. Rebuild it? Its documents will be deleted and re-extracted.`)) return;
 
   const panel = $("#ingest"), bar = $("#ingestBar"), msg = $("#ingestMsg");
   panel.classList.remove("hide");
@@ -836,6 +844,7 @@ async function ingest(fileList) {
       fd.append("folder_name", root);
       fd.append("search_space_id", String(state.spaceId));
       fd.append("relative_paths", JSON.stringify(paths.slice(i, i + BATCH)));
+      if (threadId) fd.append("thread_id", String(threadId));
       if (rootId) fd.append("root_folder_id", String(rootId));
       for (const f of chunk) fd.append("files", f, f.name);
 
@@ -865,7 +874,8 @@ async function ingest(fileList) {
       toast(`Indexed ${ready}/${files.length} in "${root}". ${failed} failed; ` +
             `${missing} produced no document (unsupported type, or identical content already indexed).`, "warn", 12000);
     } else {
-      toast(`Indexed ${ready} file(s) into "${root}".`, "ok");
+      toast(`Indexed ${ready} file(s) into "${root}"` +
+            (threadId ? " (visible only in this session — ⤴ in Folders makes it space-wide)." : "."), "ok", 9000);
     }
   } catch (e) {
     toast(`Ingest of "${root}" failed: ${e.message}`, "err", 12000);
@@ -1553,6 +1563,9 @@ function helpCommand() {
     "  /help                    show this",
     "",
     "Anything without a leading / is asked against your knowledge base.",
+    "",
+    "Folders you upload are visible only in the session you uploaded them in.",
+    "Use ⤴ in the Folders panel to promote one to space-wide (all sessions).",
   ].join("\n"));
 }
 
@@ -1741,6 +1754,12 @@ async function deleteSession(thread) {
   await resumeSession();
 }
 
+async function promoteFolder(f) {
+  await api("PATCH", `/api/v1/folders/${f.id}/scope`, { json: { scope: "space" } });
+  toast(`"${f.name}" is now space-wide — every session sees it.`, "ok", 8000);
+  await renderFolders();
+}
+
 async function renderFolders() {
   const box = $("#folders");
   const folders = await watchedFolders() ?? [];
@@ -1748,13 +1767,34 @@ async function renderFolders() {
   if (!folders.length) { box.innerHTML = '<div class="empty">no folders indexed</div>'; return; }
 
   for (const f of folders) {
+    const scoped = f.owner_thread_id != null;
+    const mine = scoped && f.owner_thread_id === state.threadId;
     const row = document.createElement("div");
     row.className = "item";
     row.innerHTML = `<span class="name"></span>
+      <span class="badge scope hide"></span>
+      <button class="sm act hide" data-a="promote"
+        title="Make this folder space-wide: every chat session will see it.">⤴</button>
       <button class="sm act" data-a="share">Share</button>
       <button class="sm act danger" data-a="rm">✕</button>`;
     row.querySelector(".name").textContent = f.name;
-    row.querySelector('[data-a="share"]').onclick = () => guard(() => shareFolder(f.name));
+    // A session-scoped folder answers only inside its own session; label whose
+    // it is so two same-named rows are tellable apart.
+    const badge = row.querySelector(".scope");
+    if (scoped) {
+      badge.textContent = mine ? "this session" : `session #${f.owner_thread_id}`;
+      badge.classList.remove("hide");
+      row.querySelector('[data-a="promote"]').classList.remove("hide");
+      row.querySelector('[data-a="promote"]').onclick = () => {
+        if (confirm(`Make "${f.name}" space-wide? Every chat session will then see and search it. This cannot be scoped back.`)) {
+          guard(() => promoteFolder(f));
+        }
+      };
+    }
+    // The backend refuses to share a session-scoped folder (promote first), so
+    // don't offer a button that can only 400.
+    if (scoped) row.querySelector('[data-a="share"]').classList.add("hide");
+    else row.querySelector('[data-a="share"]').onclick = () => guard(() => shareFolder(f.name));
     row.querySelector('[data-a="rm"]').onclick = () => {
       if (confirm(`Remove "${f.name}" and all of its documents?`)) {
         guard(async () => { await deleteFolder(f.id); toast(`Removed "${f.name}".`); await renderFolders(); });
@@ -1923,7 +1963,20 @@ async function toggleUserFolders(user, box) {
     g.className = "grow";
     g.innerHTML = `<span></span> <span class="sub">in ${f.search_space_name ?? `space #${f.search_space_id}`}</span>`;
     g.querySelector("span").textContent = f.name;
+    if (f.owner_thread_id != null) g.querySelector("span").after(tagged(` session #${f.owner_thread_id}`, "off"));
     r.append(g);
+    if (f.owner_thread_id != null) {
+      r.append(makeBtn("Promote", "", () => {
+        if (confirm(`Make "${f.name}" (of ${user.email}) space-wide? All of their sessions will see it.`)) {
+          guard(async () => {
+            await adminApi("PATCH", `/folders/${f.id}/scope`);
+            toast(`"${f.name}" is now space-wide.`);
+            box.classList.add("hide");
+            await toggleUserFolders(user, box);  // re-expand with fresh data
+          });
+        }
+      }));
+    }
     r.append(makeBtn("Delete", "danger", () => {
       if (confirm(`Delete folder "${f.name}" (of ${user.email}) and its documents?`)) {
         guard(async () => {

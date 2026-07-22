@@ -65,6 +65,18 @@ async def create_folder_share(
 
     folder = await resolve_folder_path(session, search_space_id, request.path)
 
+    # A session-scoped folder is invisible even to the owner's other chats;
+    # letting it cross a user boundary before being deliberately promoted
+    # would be a surprising widening. Promote first, then share.
+    if folder.owner_thread_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This folder is scoped to a single chat session. Promote it to "
+                "space-wide (PATCH /folders/{id}/scope) before sharing."
+            ),
+        )
+
     share = SharedFolder(
         token=generate_share_token(),
         source_folder_id=folder.id,

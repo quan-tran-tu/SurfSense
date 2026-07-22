@@ -1330,6 +1330,17 @@ class Folder(BaseModel, TimestampMixin):
         nullable=True,
         index=True,
     )
+    # Session scoping: NULL = space-wide ("general knowledge", the pre-existing
+    # behavior); a thread id = visible only inside that chat session. Children
+    # inherit the stamp at creation, so visibility is a per-row check, no CTE.
+    # ON DELETE SET NULL means deleting a chat auto-promotes its folders to
+    # space-wide instead of destroying uploaded documents.
+    owner_thread_id = Column(
+        Integer,
+        ForeignKey("new_chat_threads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     updated_at = Column(
         TIMESTAMP(timezone=True),
         nullable=False,

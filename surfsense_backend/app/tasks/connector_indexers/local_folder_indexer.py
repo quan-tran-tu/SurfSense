@@ -31,7 +31,10 @@ from app.db import (
     Folder,
 )
 from app.indexing_pipeline.connector_document import ConnectorDocument
-from app.indexing_pipeline.document_hashing import compute_identifier_hash
+from app.indexing_pipeline.document_hashing import (
+    compute_identifier_hash,
+    local_file_unique_id,
+)
 from app.indexing_pipeline.indexing_pipeline_service import IndexingPipelineService
 from app.services.etl_credit_service import EtlCreditService, InsufficientCreditsError
 from app.services.task_logging_service import TaskLoggingService
@@ -312,6 +315,7 @@ async def _resolve_folder_for_file(
     root_folder_id: int,
     search_space_id: int,
     user_id: str,
+    owner_thread_id: int | None = None,
 ) -> int:
     """Given a file's relative path, ensure all parent Folder rows exist and
     return the folder_id for the file's immediate parent directory.
@@ -319,6 +323,9 @@ async def _resolve_folder_for_file(
     For a file at "notes/daily/today.md", this ensures Folder rows exist for
     "notes" and "notes/daily", and returns the id of "notes/daily".
     For a file at "readme.md" (root level), returns root_folder_id.
+
+    Created folders carry ``owner_thread_id`` (the upload root's session
+    stamp), keeping the whole subtree in one scope.
     """
     parent_dir = str(Path(rel_path).parent)
     if parent_dir == ".":
@@ -347,6 +354,7 @@ async def _resolve_folder_for_file(
                 search_space_id=search_space_id,
                 created_by_id=user_id,
                 position="a0",
+                owner_thread_id=owner_thread_id,
             )
             session.add(new_folder)
             await session.flush()
@@ -478,9 +486,10 @@ def _build_connector_doc(
     *,
     search_space_id: int,
     user_id: str,
+    owner_thread_id: int | None = None,
 ) -> ConnectorDocument:
     """Build a ConnectorDocument from a local file's extracted content."""
-    unique_id = f"{folder_name}:{relative_path}"
+    unique_id = local_file_unique_id(folder_name, relative_path, owner_thread_id)
     metadata = {
         "folder_name": folder_name,
         "file_path": relative_path,
@@ -1169,11 +1178,14 @@ async def _mirror_folder_structure_from_paths(
     search_space_id: int,
     user_id: str,
     root_folder_id: int | None = None,
+    owner_thread_id: int | None = None,
 ) -> tuple[dict[str, int], int]:
     """Create DB Folder rows from a list of relative file paths.
 
     Unlike ``_mirror_folder_structure`` this does not walk the filesystem;
     it derives the directory tree from the paths provided by the client.
+    Created rows carry ``owner_thread_id`` so a session-scoped upload keeps
+    its whole subtree in the session's scope.
 
     Returns (mapping, root_folder_id) where mapping is
     relative_dir_path -> folder_id.  The empty-string key maps to root.
@@ -1206,6 +1218,7 @@ async def _mirror_folder_structure_from_paths(
             search_space_id=search_space_id,
             created_by_id=user_id,
             position="a0",
+            owner_thread_id=owner_thread_id,
         )
         session.add(root_folder)
         await session.flush()
@@ -1238,6 +1251,7 @@ async def _mirror_folder_structure_from_paths(
                 search_space_id=search_space_id,
                 created_by_id=user_id,
                 position="a0",
+                owner_thread_id=owner_thread_id,
             )
             session.add(new_folder)
             await session.flush()
@@ -1283,6 +1297,15 @@ async def index_uploaded_files(
     )
 
     try:
+        # The upload route stamps the root folder with the uploading chat
+        # session (or leaves it space-wide); everything downstream — created
+        # subfolders and document identity hashes — derives from that stamp.
+        owner_thread_id: int | None = None
+        if root_folder_id:
+            root_row = await session.get(Folder, root_folder_id)
+            if root_row is not None:
+                owner_thread_id = root_row.owner_thread_id
+
         all_relative_paths = [m["relative_path"] for m in file_mappings]
         _folder_mapping, root_folder_id = await _mirror_folder_structure_from_paths(
             session=session,
@@ -1291,6 +1314,7 @@ async def index_uploaded_files(
             search_space_id=search_space_id,
             user_id=user_id,
             root_folder_id=root_folder_id,
+            owner_thread_id=owner_thread_id,
         )
         await session.flush()
 
@@ -1315,7 +1339,9 @@ async def index_uploaded_files(
             filename = mapping["filename"]
 
             try:
-                unique_id = f"{folder_name}:{relative_path}"
+                unique_id = local_file_unique_id(
+                    folder_name, relative_path, owner_thread_id
+                )
                 uid_hash = compute_identifier_hash(
                     DocumentType.LOCAL_FOLDER_FILE.value,
                     unique_id,
@@ -1393,6 +1419,7 @@ async def index_uploaded_files(
                     folder_name=folder_name,
                     search_space_id=search_space_id,
                     user_id=user_id,
+                    owner_thread_id=owner_thread_id,
                 )
 
                 connector_doc.folder_id = await _resolve_folder_for_file(
@@ -1401,6 +1428,7 @@ async def index_uploaded_files(
                     root_folder_id,
                     search_space_id,
                     user_id,
+                    owner_thread_id=owner_thread_id,
                 )
 
                 documents = await pipeline.prepare_for_indexing([connector_doc])

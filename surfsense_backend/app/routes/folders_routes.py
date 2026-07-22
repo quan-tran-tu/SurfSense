@@ -15,12 +15,15 @@ from app.schemas import (
     FolderMove,
     FolderRead,
     FolderReorder,
+    FolderScopeUpdate,
     FolderUpdate,
 )
+from app.services.folder_scope_service import promote_folder_to_space
 from app.services.folder_service import (
     check_no_circular_reference,
     dispatch_folder_deletion,
     generate_folder_position,
+    get_folder_subtree_ids,
     get_subtree_max_depth,
     validate_folder_depth,
 )
@@ -303,6 +306,22 @@ async def move_folder(
         )
         folder.parent_id = request.new_parent_id
         folder.position = position
+
+        # Session scope follows the destination: a subtree must stay uniform
+        # (every visibility check assumes children carry their root's stamp), so
+        # moving under a parent restamps the whole subtree to the parent's
+        # scope. Moving to root keeps the current scope.
+        if request.new_parent_id is not None:
+            new_parent = await session.get(Folder, request.new_parent_id)
+            target_owner = new_parent.owner_thread_id if new_parent else None
+            if target_owner != folder.owner_thread_id:
+                subtree_ids = await get_folder_subtree_ids(session, folder_id)
+                await session.execute(
+                    Folder.__table__.update()
+                    .where(Folder.id.in_(subtree_ids))
+                    .values(owner_thread_id=target_owner)
+                )
+
         await session.commit()
         await session.refresh(folder)
         return folder
@@ -361,6 +380,37 @@ async def reorder_folder(
         raise HTTPException(
             status_code=500, detail=f"Failed to reorder folder: {e!s}"
         ) from e
+
+
+@router.patch("/folders/{folder_id}/scope")
+async def update_folder_scope(
+    folder_id: int,
+    request: FolderScopeUpdate,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Promote a session-scoped folder subtree to space-wide ("general knowledge").
+
+    Nothing is copied or re-embedded — the session stamp is cleared and the
+    documents' identity hashes are recomputed to their space-wide form. After
+    this, every chat session in the space sees the folder. Requires
+    DOCUMENTS_UPDATE. There is no demotion; re-upload into a session instead.
+    """
+    del request  # scope can only be "space"; validated by the schema
+    folder = await session.get(Folder, folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    await check_permission(
+        session,
+        auth,
+        folder.search_space_id,
+        Permission.DOCUMENTS_UPDATE.value,
+        "You don't have permission to update folders in this search space",
+    )
+
+    result = await promote_folder_to_space(session, folder)
+    return {"message": f"Folder '{folder.name}' is now space-wide", **result}
 
 
 @router.delete("/folders/{folder_id}")

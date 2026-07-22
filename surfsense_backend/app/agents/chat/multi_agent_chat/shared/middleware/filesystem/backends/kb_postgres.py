@@ -55,6 +55,7 @@ from app.agents.chat.multi_agent_chat.shared.document_render import (
 from app.agents.chat.runtime.path_resolver import (
     DOCUMENTS_ROOT,
     build_path_index,
+    current_thread_id,
     doc_to_virtual_path,
     is_shared_path,
     readable_documents_filter,
@@ -413,7 +414,9 @@ class KBPostgresBackend(BackendProtocol):
         if not normalized_path.startswith(DOCUMENTS_ROOT):
             return [], set()
 
-        index = await build_path_index(session, self.search_space_id)
+        index = await build_path_index(
+            session, self.search_space_id, thread_id=current_thread_id()
+        )
         target_folder_id: int | None = None
         if normalized_path != DOCUMENTS_ROOT:
             target_path = normalized_path
@@ -529,6 +532,7 @@ class KBPostgresBackend(BackendProtocol):
                 session,
                 search_space_id=self.search_space_id,
                 virtual_path=path,
+                thread_id=current_thread_id(),
             )
             if document_row is None:
                 return None
@@ -679,7 +683,9 @@ class KBPostgresBackend(BackendProtocol):
         if normalized.startswith(DOCUMENTS_ROOT) or normalized == "/":
             try:
                 async with shielded_async_session() as session:
-                    index = await build_path_index(session, self.search_space_id)
+                    index = await build_path_index(
+                        session, self.search_space_id, thread_id=current_thread_id()
+                    )
                     rows = await session.execute(
                         select(Document.id, Document.title, Document.folder_id).where(
                             readable_documents_filter(index, self.search_space_id)
@@ -759,7 +765,9 @@ class KBPostgresBackend(BackendProtocol):
         if normalized.startswith(DOCUMENTS_ROOT) or normalized == "/":
             try:
                 async with shielded_async_session() as session:
-                    index = await build_path_index(session, self.search_space_id)
+                    index = await build_path_index(
+                        session, self.search_space_id, thread_id=current_thread_id()
+                    )
                     sub = (
                         select(Chunk.document_id, Chunk.id, Chunk.content)
                         .join(Document, Document.id == Chunk.document_id)
@@ -861,7 +869,9 @@ class KBPostgresBackend(BackendProtocol):
 
         try:
             async with shielded_async_session() as session:
-                index = await build_path_index(session, self.search_space_id)
+                index = await build_path_index(
+                    session, self.search_space_id, thread_id=current_thread_id()
+                )
                 doc_rows_raw = await session.execute(
                     select(
                         Document.id,

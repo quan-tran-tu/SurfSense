@@ -865,6 +865,7 @@ async def search_document_titles(
 async def get_document_by_virtual_path(
     search_space_id: int,
     virtual_path: str,
+    thread_id: int | None = None,
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(get_auth_context),
 ):
@@ -899,6 +900,7 @@ async def get_document_by_virtual_path(
             session,
             search_space_id=search_space_id,
             virtual_path=virtual_path,
+            thread_id=thread_id,
         )
         if document is None:
             raise HTTPException(status_code=404, detail="Document not found")
@@ -1683,6 +1685,7 @@ async def folder_upload(
     root_folder_id: int | None = Form(None),
     use_vision_llm: bool = Form(False),
     processing_mode: str = Form("basic"),
+    thread_id: int | None = Form(None),
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(get_auth_context),
 ):
@@ -1691,13 +1694,25 @@ async def folder_upload(
 
     Files are written to temp storage and dispatched to a Celery task.
     Works for all deployment modes (no is_self_hosted guard).
+
+    ``thread_id`` scopes the uploaded folder to that chat session: only that
+    session's agent sees it, until it is promoted to space-wide via
+    ``PATCH /folders/{id}/scope``. Omitted = space-wide (legacy behavior).
     """
     import json
     import tempfile
 
+    from app.db import NewChatThread
     from app.etl_pipeline.etl_document import ProcessingMode
 
     validated_mode = ProcessingMode.coerce(processing_mode)
+
+    if thread_id is not None:
+        thread = await session.get(NewChatThread, thread_id)
+        if not thread or thread.search_space_id != search_space_id:
+            raise HTTPException(
+                status_code=404, detail="Chat session not found in this search space"
+            )
 
     await check_permission(
         session,
@@ -1755,12 +1770,18 @@ async def folder_upload(
             "folder_path": folder_name,
             "processing_mode": validated_mode.value,
         }
+        # The root lookup must match the session scope exactly: session A's
+        # "Research" and session B's "Research" are distinct roots, and neither
+        # may hijack a space-wide folder of the same name (or vice versa).
         existing_root = (
             await session.execute(
                 select(Folder).where(
                     Folder.name == folder_name,
                     Folder.parent_id.is_(None),
                     Folder.search_space_id == search_space_id,
+                    Folder.owner_thread_id == thread_id
+                    if thread_id is not None
+                    else Folder.owner_thread_id.is_(None),
                 )
             )
         ).scalar_one_or_none()
@@ -1775,6 +1796,7 @@ async def folder_upload(
                 created_by_id=str(user.id),
                 position="a0",
                 folder_metadata=watched_metadata,
+                owner_thread_id=thread_id,
             )
             session.add(root_folder)
             await session.flush()
@@ -1837,7 +1859,10 @@ async def folder_unlink(
 
     For each relative path, find the matching document and delete it.
     """
-    from app.indexing_pipeline.document_hashing import compute_identifier_hash
+    from app.indexing_pipeline.document_hashing import (
+        compute_identifier_hash,
+        local_file_unique_id,
+    )
     from app.tasks.connector_indexers.local_folder_indexer import (
         _cleanup_empty_folder_chain,
     )
@@ -1850,10 +1875,20 @@ async def folder_unlink(
         "You don't have permission to delete documents in this search space",
     )
 
+    # Session-scoped uploads mix the owning thread into the identity hash, so
+    # the same scope the indexer used must be recovered from the root folder.
+    owner_thread_id = None
+    if request.root_folder_id:
+        root = await session.get(Folder, request.root_folder_id)
+        if root is not None:
+            owner_thread_id = root.owner_thread_id
+
     deleted_count = 0
 
     for rel_path in request.relative_paths:
-        unique_id = f"{request.folder_name}:{rel_path}"
+        unique_id = local_file_unique_id(
+            request.folder_name, rel_path, owner_thread_id
+        )
         uid_hash = compute_identifier_hash(
             DocumentType.LOCAL_FOLDER_FILE.value,
             unique_id,
@@ -1893,7 +1928,10 @@ async def folder_sync_finalize(
     folder. Any document in the DB for this folder that is NOT in the list
     gets deleted.
     """
-    from app.indexing_pipeline.document_hashing import compute_identifier_hash
+    from app.indexing_pipeline.document_hashing import (
+        compute_identifier_hash,
+        local_file_unique_id,
+    )
     from app.services.folder_service import get_folder_subtree_ids
     from app.tasks.connector_indexers.local_folder_indexer import (
         _cleanup_empty_folders,
@@ -1910,11 +1948,16 @@ async def folder_sync_finalize(
     if not request.root_folder_id:
         return {"deleted_count": 0}
 
+    root = await session.get(Folder, request.root_folder_id)
+    owner_thread_id = root.owner_thread_id if root is not None else None
+
     subtree_ids = await get_folder_subtree_ids(session, request.root_folder_id)
 
     seen_hashes: set[str] = set()
     for rel_path in request.all_relative_paths:
-        unique_id = f"{request.folder_name}:{rel_path}"
+        unique_id = local_file_unique_id(
+            request.folder_name, rel_path, owner_thread_id
+        )
         uid_hash = compute_identifier_hash(
             DocumentType.LOCAL_FOLDER_FILE.value,
             unique_id,

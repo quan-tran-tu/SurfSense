@@ -11,6 +11,24 @@ def compute_identifier_hash(
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
 
+def local_file_unique_id(
+    folder_name: str, relative_path: str, owner_thread_id: int | None = None
+) -> str:
+    """Identity string for a LOCAL_FOLDER_FILE document.
+
+    ``unique_identifier_hash`` is globally unique, and session-scoped folders
+    let two chat sessions each upload a root named ``folder_name`` with the
+    same files inside — so the owning thread must be part of the identity or
+    the second session's upload silently updates the first session's rows.
+    A space-wide folder (``owner_thread_id is None``) keeps the historical
+    unprefixed form, so existing documents keep resolving.
+    """
+    base = f"{folder_name}:{relative_path}"
+    if owner_thread_id is None:
+        return base
+    return f"thread:{owner_thread_id}:{base}"
+
+
 def compute_unique_identifier_hash(doc: ConnectorDocument) -> str:
     """Return a stable SHA-256 hash identifying a document by its source identity."""
     return compute_identifier_hash(

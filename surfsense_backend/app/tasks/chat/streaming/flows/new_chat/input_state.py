@@ -116,6 +116,7 @@ async def build_new_chat_input_state(
         mentioned_document_ids=mentioned_document_ids,
         mentioned_folder_ids=mentioned_folder_ids,
         mentioned_documents=mentioned_documents,
+        thread_id=chat_id,
     )
 
     # Referenced-chat context is path-independent, so resolve it in every
@@ -166,6 +167,7 @@ async def _resolve_mentions_for_query(
     mentioned_document_ids: list[int] | None,
     mentioned_folder_ids: list[int] | None,
     mentioned_documents: list[dict[str, Any]] | None,
+    thread_id: int | None = None,
 ) -> tuple[str, list[int]]:
     r"""Resolve @-mention chips and rewrite the user query to canonical paths.
 
@@ -210,6 +212,7 @@ async def _resolve_mentions_for_query(
         mentioned_documents=chip_objs,
         mentioned_document_ids=mentioned_document_ids,
         mentioned_folder_ids=mentioned_folder_ids,
+        thread_id=thread_id,
     )
     agent_user_query = substitute_in_text(user_query, resolved.token_to_path)
     accepted_folder_ids = resolved.mentioned_folder_ids

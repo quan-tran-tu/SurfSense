@@ -220,9 +220,15 @@ async def _restore_in_place_document(
 
     virtual_path = await _virtual_path_from_snapshot(session, revision)
     if virtual_path:
+        from app.agents.chat.runtime.path_resolver import (
+            folder_owner_thread_id,
+            note_path_identifier,
+        )
+
+        folder_owner = await folder_owner_thread_id(session, doc.folder_id)
         doc.unique_identifier_hash = generate_unique_identifier_hash(
             DocumentType.NOTE,
-            virtual_path,
+            note_path_identifier(virtual_path, folder_owner),
             doc.search_space_id,
         )
 
@@ -286,9 +292,15 @@ async def _reinsert_document_from_revision(
         )
 
     search_space_id = revision.search_space_id
+    from app.agents.chat.runtime.path_resolver import (
+        folder_owner_thread_id,
+        note_path_identifier,
+    )
+
+    folder_owner = await folder_owner_thread_id(session, revision.folder_id_before)
     unique_identifier_hash = generate_unique_identifier_hash(
         DocumentType.NOTE,
-        virtual_path,
+        note_path_identifier(virtual_path, folder_owner),
         search_space_id,
     )
     collision = await session.execute(

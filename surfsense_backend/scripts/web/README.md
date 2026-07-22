@@ -112,6 +112,20 @@ boundary, so user A can never see or delete user B's documents. This client
 never lets you name a space by id. Because the space name matches, `ask.sh` and
 this page share one knowledge base — ingest from the CLI, ask from the browser.
 
+**Uploads are scoped to the session you upload them in.** **+ Add** stamps the
+folder with the open session's thread id (`folders.owner_thread_id`): only that
+session's agent can see, search, or cite it. Other sessions — yours included —
+don't even see it in their workspace tree. The **Folders** list shows every
+folder with a badge (`this session` / `session #n`), and the **⤴** button
+promotes one to **space-wide** ("general knowledge"): the stamp is cleared on
+the whole subtree and every session sees it from the next question on. Nothing
+is copied or re-embedded by promotion, and there is no demotion — re-upload
+inside a session instead. Two sessions may each upload a folder with the same
+name; they are distinct folders with distinct documents. Sharing (`Share`) is
+only offered on space-wide folders — promote first, then share. Uploads made
+with no session open (or by `ask.sh`, which predates this) are space-wide, which
+is exactly the old behavior.
+
 ## Chat commands
 
 Type these in the composer (a leading `/` marks a command; anything else is a
@@ -132,7 +146,8 @@ persisted.
 
 A user whose `is_superuser` flag is set sees an **Admin** button in the sidebar.
 It opens a panel to manage every account, their folders, and all folder shares:
-deactivate or delete users, grant/revoke admin, delete any folder, and — the one
+deactivate or delete users, grant/revoke admin, delete any folder, **promote**
+any user's session-scoped folder to space-wide, and — the one
 thing a normal revoke can't do — **hard-revoke** a share, which deletes its
 `FolderLink`s so the shared folder is removed from every importer's knowledge
 base outright, not merely silenced. Every action is enforced server-side by
@@ -194,7 +209,8 @@ called `hello` stays `hello` and keeps its history across sign-outs.
 - **A folder's KB name is its basename**, never its full path. `Folder.name`
   becomes the agent's virtual path (`/documents/<name>/…`), so a full disk path
   would leak your directory layout into every prompt. Two folders with the same
-  basename therefore collide onto one KB folder.
+  basename collide onto one KB folder *within the same scope* — the same
+  session, or both space-wide. Across sessions they coexist.
 - **Uploads wait for indexing.** A folder cannot answer anything until Celery has
   finished; the progress bar tracks documents to `ready`, and holds until the
   counts stop moving (Celery keeps inserting rows after the upload returns).

@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from sqlalchemy import false, or_, select
+from sqlalchemy import and_, false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Document, DocumentType, Folder
@@ -29,6 +29,53 @@ from app.utils.document_converters import generate_unique_identifier_hash
 
 DOCUMENTS_ROOT = "/documents"
 """Root virtual folder for all KB documents."""
+
+
+def current_thread_id() -> int | None:
+    """The active chat thread id, from the live LangGraph config; ``None`` outside a run.
+
+    Compiled graphs are cached per search space and serve many threads, so the
+    thread must be resolved at call time from ``configurable.thread_id`` — never
+    captured at construction (same pattern as
+    ``KnowledgeBasePersistenceMiddleware._resolve_thread_id``). ``None`` means
+    "no session context": callers treat that as unscoped, so non-chat surfaces
+    (REST, exports, admin) keep seeing everything.
+
+    Subagent runs carry an *extended* id (``subagent_invoke_config`` namespaces
+    the checkpoint slot as ``"{parent_thread}::task:{tool_call_id}"``), and the
+    knowledge_base subagent is where retrieval actually happens — so the parent
+    id is parsed off the front rather than treating the string as garbage,
+    which would silently widen every search back to the whole space.
+    """
+    try:
+        from langgraph.config import get_config
+
+        config = get_config()
+    except Exception:
+        return None
+    if not isinstance(config, dict):
+        return None
+    value = (config.get("configurable") or {}).get("thread_id")
+    if value is None:
+        return None
+    base = str(value).split("::", 1)[0]
+    try:
+        return int(base)
+    except (TypeError, ValueError):
+        return None
+
+
+def note_path_identifier(virtual_path: str, owner_thread_id: int | None) -> str:
+    """Identity string hashed into a NOTE's ``unique_identifier_hash``.
+
+    Session-scoped folders make the same virtual path reachable from several
+    threads (two chats can each upload a root named ``Research``), and the hash
+    is globally unique — so the owning thread must be part of the identity or
+    the second session's write collides with the first's document.
+    """
+    if owner_thread_id is None:
+        return virtual_path
+    return f"thread:{owner_thread_id}:{virtual_path}"
 
 _INVALID_FILENAME_CHARS = re.compile(r"[\\/:*?\"<>|]+")
 _WHITESPACE_RUN = re.compile(r"\s+")
@@ -108,6 +155,14 @@ class PathIndex:
     write guard can test membership, without re-querying.
     """
 
+    hidden_folder_ids: set[int] = field(default_factory=set)
+    """Folders owned by a *different* chat session than the one this index serves.
+
+    They are excluded from ``folder_paths`` entirely — invisible to the tree,
+    ``ls``, glob, grep, and ``@``-mentions — and their documents are excluded by
+    :func:`readable_documents_filter`. Empty when the index was built without a
+    thread (non-chat surfaces stay unscoped)."""
+
 
 SHARED_ROOT = f"{DOCUMENTS_ROOT}/{SHARED_PREFIX}"
 """Virtual mount for folders reachable through a share link. Read-only."""
@@ -127,40 +182,79 @@ def is_shared_path(path: str) -> bool:
 
 
 def readable_documents_filter(index: PathIndex, search_space_id: int):
-    """SQL predicate for "documents this space may read".
+    """SQL predicate for "documents this context may read".
 
     Owned documents, plus those sitting in a folder reachable through a live
-    share link. Every read surface that renders paths from a :class:`PathIndex`
-    must use this instead of a bare ``search_space_id ==`` — otherwise linked
-    folders appear in the tree but their documents do not, and the agent sees
-    empty directories it cannot explain.
+    share link, minus those in a folder owned by a different chat session.
+    Every read surface that renders paths from a :class:`PathIndex` must use
+    this instead of a bare ``search_space_id ==`` — otherwise linked folders
+    appear in the tree but their documents do not (or another session's
+    documents surface with no folder to hold them).
     """
     if not index.linked_folder_ids:
-        return Document.search_space_id == search_space_id
-    return or_(
-        Document.search_space_id == search_space_id,
-        Document.folder_id.in_(index.linked_folder_ids),
+        readable = Document.search_space_id == search_space_id
+    else:
+        readable = or_(
+            Document.search_space_id == search_space_id,
+            Document.folder_id.in_(index.linked_folder_ids),
+        )
+    if not index.hidden_folder_ids:
+        return readable
+    # NOT IN is NULL-hostile: a folderless document must stay readable.
+    return and_(
+        readable,
+        or_(
+            Document.folder_id.is_(None),
+            Document.folder_id.notin_(index.hidden_folder_ids),
+        ),
     )
 
 
 async def _build_folder_paths(
     session: AsyncSession,
     search_space_id: int,
-) -> tuple[dict[int, str], set[int]]:
+    thread_id: int | None = None,
+) -> tuple[dict[int, str], set[int], set[int]]:
     """Compute ``Folder.id`` -> absolute virtual path under ``/documents``.
 
-    Returns the path map and the set of linked (read-only, foreign) folder ids.
-    Owned folders are rooted at ``/documents``; folders reachable through a live
-    share link are rooted at ``/documents/_shared/<root name>`` so they read as
-    visibly foreign and so the write guard has a cheap path-prefix test.
+    Returns ``(path map, linked folder ids, hidden folder ids)``. Owned folders
+    are rooted at ``/documents``; folders reachable through a live share link
+    are rooted at ``/documents/_shared/<root name>`` so they read as visibly
+    foreign and so the write guard has a cheap path-prefix test.
+
+    When ``thread_id`` is given, folders owned by a *different* chat session —
+    or sitting anywhere under one, so a broken stamping invariant still fails
+    closed — go into the hidden set and get no path at all.
     """
     result = await session.execute(
-        select(Folder.id, Folder.name, Folder.parent_id).where(
+        select(Folder.id, Folder.name, Folder.parent_id, Folder.owner_thread_id).where(
             Folder.search_space_id == search_space_id
         )
     )
     rows = result.all()
-    by_id = {row.id: {"name": row.name, "parent_id": row.parent_id} for row in rows}
+    by_id = {
+        row.id: {
+            "name": row.name,
+            "parent_id": row.parent_id,
+            "owner_thread_id": row.owner_thread_id,
+        }
+        for row in rows
+    }
+
+    def _foreign(owner: int | None) -> bool:
+        return thread_id is not None and owner is not None and owner != thread_id
+
+    hidden: set[int] = set()
+    for folder_id in by_id:
+        cursor: int | None = folder_id
+        visited: set[int] = set()
+        while cursor is not None and cursor in by_id and cursor not in visited:
+            visited.add(cursor)
+            if _foreign(by_id[cursor]["owner_thread_id"]):
+                hidden.add(folder_id)
+                break
+            cursor = by_id[cursor]["parent_id"]
+
     cache: dict[int, str] = {}
 
     def resolve(folder_id: int) -> str:
@@ -180,10 +274,11 @@ async def _build_folder_paths(
         return path
 
     for folder_id in by_id:
-        resolve(folder_id)
+        if folder_id not in hidden:
+            resolve(folder_id)
 
     linked_ids = await _add_linked_folder_paths(session, search_space_id, cache)
-    return cache, linked_ids
+    return cache, linked_ids, hidden
 
 
 async def _add_linked_folder_paths(
@@ -244,6 +339,7 @@ async def build_path_index(
     search_space_id: int,
     *,
     populate_occupants: bool = True,
+    thread_id: int | None = None,
 ) -> PathIndex:
     """Build a :class:`PathIndex` for a search space.
 
@@ -255,20 +351,33 @@ async def build_path_index(
 
     The index spans owned documents *and* those reachable through a live share
     link; the latter are read-only and flagged by ``linked_folder_ids``.
+    ``thread_id`` scopes the index to a chat session: folders owned by other
+    sessions are dropped from the map and their documents from the occupancy
+    seed. ``None`` builds an unscoped index (non-chat surfaces).
     """
-    folder_paths, linked_folder_ids = await _build_folder_paths(session, search_space_id)
+    folder_paths, linked_folder_ids, hidden_folder_ids = await _build_folder_paths(
+        session, search_space_id, thread_id
+    )
     occupants: dict[str, int] = {}
     if populate_occupants:
-        rows = await session.execute(
-            select(Document.id, Document.title, Document.folder_id).where(
-                or_(
-                    Document.search_space_id == search_space_id,
-                    Document.folder_id.in_(linked_folder_ids)
-                    if linked_folder_ids
-                    else false(),
-                )
+        query = select(Document.id, Document.title, Document.folder_id).where(
+            or_(
+                Document.search_space_id == search_space_id,
+                Document.folder_id.in_(linked_folder_ids)
+                if linked_folder_ids
+                else false(),
             )
         )
+        if hidden_folder_ids:
+            # Without this, another session's documents would seed the map with
+            # their folder missing and appear as loose files at /documents.
+            query = query.where(
+                or_(
+                    Document.folder_id.is_(None),
+                    Document.folder_id.notin_(hidden_folder_ids),
+                )
+            )
+        rows = await session.execute(query)
         for row in rows.all():
             base = folder_paths.get(row.folder_id, DOCUMENTS_ROOT)
             filename = safe_filename(str(row.title or "untitled"))
@@ -280,6 +389,7 @@ async def build_path_index(
         folder_paths=folder_paths,
         occupants=occupants,
         linked_folder_ids=linked_folder_ids,
+        hidden_folder_ids=hidden_folder_ids,
     )
 
 
@@ -306,20 +416,53 @@ def doc_to_virtual_path(
     return path
 
 
+async def folder_owner_thread_id(
+    session: AsyncSession, folder_id: int | None
+) -> int | None:
+    """The session that owns ``folder_id`` (via its own stamp), or ``None``.
+
+    Relies on the stamping invariant (children carry their subtree root's
+    owner), which every folder-creation site maintains.
+    """
+    if folder_id is None:
+        return None
+    result = await session.execute(
+        select(Folder.owner_thread_id).where(Folder.id == folder_id)
+    )
+    row = result.first()
+    return row[0] if row is not None else None
+
+
+async def _folder_visible_to_thread(
+    session: AsyncSession, folder_id: int | None, thread_id: int | None
+) -> bool:
+    """False iff the folder belongs to a chat session other than ``thread_id``."""
+    if folder_id is None or thread_id is None:
+        return True
+    owner = await folder_owner_thread_id(session, folder_id)
+    return owner is None or owner == thread_id
+
+
 async def virtual_path_to_doc(
     session: AsyncSession,
     *,
     search_space_id: int,
     virtual_path: str,
+    thread_id: int | None = None,
 ) -> Document | None:
     """Resolve a virtual path back to a ``Document`` row.
 
     Resolution order:
     1. ``Document.unique_identifier_hash`` lookup (fast path for paths created
-       by SurfSense itself — every NOTE write goes through this hash).
+       by SurfSense itself — every NOTE write goes through this hash). With a
+       ``thread_id``, the session-scoped hash is tried first: the same path can
+       exist in several sessions, and the caller's own copy must win.
     2. If the basename carries a ``" (<doc_id>).xml"`` disambiguation suffix,
        try a direct id lookup constrained to the search space.
     3. Title-from-basename + folder-resolution lookup as a last resort.
+
+    ``thread_id`` also constrains folder resolution, so another session's
+    folders — and therefore their documents — cannot be reached at all.
     """
     if not virtual_path or not virtual_path.startswith(DOCUMENTS_ROOT):
         return None
@@ -329,7 +472,7 @@ async def virtual_path_to_doc(
     # the folder walk — is constrained to the wrong space and would miss them.
     # Resolve them through the index that minted the path in the first place.
     if virtual_path.startswith(f"{DOCUMENTS_ROOT}/{SHARED_PREFIX}/"):
-        index = await build_path_index(session, search_space_id)
+        index = await build_path_index(session, search_space_id, thread_id=thread_id)
         doc_id = index.occupants.get(virtual_path)
         if doc_id is None:
             return None
@@ -342,20 +485,24 @@ async def virtual_path_to_doc(
             return None
         return document
 
-    unique_hash = generate_unique_identifier_hash(
-        DocumentType.NOTE,
-        virtual_path,
-        search_space_id,
-    )
-    result = await session.execute(
-        select(Document).where(
-            Document.search_space_id == search_space_id,
-            Document.unique_identifier_hash == unique_hash,
+    hash_identifiers = [virtual_path]
+    if thread_id is not None:
+        hash_identifiers.insert(0, note_path_identifier(virtual_path, thread_id))
+    for identifier in hash_identifiers:
+        unique_hash = generate_unique_identifier_hash(
+            DocumentType.NOTE,
+            identifier,
+            search_space_id,
         )
-    )
-    document = result.scalar_one_or_none()
-    if document is not None:
-        return document
+        result = await session.execute(
+            select(Document).where(
+                Document.search_space_id == search_space_id,
+                Document.unique_identifier_hash == unique_hash,
+            )
+        )
+        document = result.scalar_one_or_none()
+        if document is not None:
+            return document
 
     rel = virtual_path[len(DOCUMENTS_ROOT) :].lstrip("/")
     if not rel:
@@ -375,11 +522,16 @@ async def virtual_path_to_doc(
             )
         )
         document = result.scalar_one_or_none()
-        if document is not None:
+        if document is not None and await _folder_visible_to_thread(
+            session, document.folder_id, thread_id
+        ):
             return document
 
     folder_id = await _resolve_folder_id(
-        session, search_space_id=search_space_id, folder_parts=folder_parts
+        session,
+        search_space_id=search_space_id,
+        folder_parts=folder_parts,
+        thread_id=thread_id,
     )
     title_candidates: list[str] = []
     raw_title = stem
@@ -429,8 +581,14 @@ async def _resolve_folder_id(
     *,
     search_space_id: int,
     folder_parts: list[str],
+    thread_id: int | None = None,
 ) -> int | None:
-    """Look up the leaf folder id for a chain of folder names; return ``None`` if missing."""
+    """Look up the leaf folder id for a chain of folder names; return ``None`` if missing.
+
+    With a ``thread_id``, other sessions' folders don't resolve, and when both a
+    session-owned and a space-wide folder carry the same name at the same level,
+    the session's own wins — the more specific scope shadows the general one.
+    """
     if not folder_parts:
         return None
     parent_id: int | None = None
@@ -440,6 +598,13 @@ async def _resolve_folder_id(
             Folder.search_space_id == search_space_id,
             Folder.name == name,
         )
+        if thread_id is not None:
+            query = query.where(
+                or_(
+                    Folder.owner_thread_id.is_(None),
+                    Folder.owner_thread_id == thread_id,
+                )
+            ).order_by((Folder.owner_thread_id == thread_id).desc())
         if parent_id is None:
             query = query.where(Folder.parent_id.is_(None))
         else:
@@ -479,7 +644,10 @@ __all__ = [
     "DOCUMENTS_ROOT",
     "PathIndex",
     "build_path_index",
+    "current_thread_id",
     "doc_to_virtual_path",
+    "folder_owner_thread_id",
+    "note_path_identifier",
     "parse_doc_id_suffix",
     "SHARED_ROOT",
     "is_shared_path",

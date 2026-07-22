@@ -41,6 +41,7 @@ from app.agents.chat.runtime.path_resolver import (
     DOCUMENTS_ROOT,
     PathIndex,
     build_path_index,
+    current_thread_id,
     doc_to_virtual_path,
     readable_documents_filter,
 )
@@ -121,8 +122,11 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         self.max_entries = max_entries
         self.max_tokens = max_tokens
         self.inject_system_message = inject_system_message
-        # (search_space_id, tree_version, live_link_fingerprint) -> rendered tree
-        self._cache: dict[tuple[int, int, tuple[int, int]], str] = {}
+        # (search_space_id, thread_id, tree_version, live_link_fingerprint)
+        # -> rendered tree. The thread is part of the key because session-scoped
+        # folders make the tree differ per chat, and this middleware instance is
+        # shared across threads via the cached compiled graph.
+        self._cache: dict[tuple[int, int | None, int, tuple[int, int]], str] = {}
         self._last_cache_outcome = "miss"
 
     async def abefore_agent(  # type: ignore[override]
@@ -194,6 +198,7 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
 
     async def _render_kb_tree(self, state: AgentState) -> str:
         version = int(state.get("tree_version") or 0)
+        thread_id = current_thread_id()
 
         try:
             async with shielded_async_session() as session:
@@ -203,13 +208,15 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
                 fingerprint = await live_link_fingerprint(
                     session, self.search_space_id
                 )
-                cache_key = (self.search_space_id, version, fingerprint)
+                cache_key = (self.search_space_id, thread_id, version, fingerprint)
                 cached = self._cache.get(cache_key)
                 self._last_cache_outcome = "hit" if cached is not None else "miss"
                 if cached is not None:
                     return cached
 
-                index = await build_path_index(session, self.search_space_id)
+                index = await build_path_index(
+                    session, self.search_space_id, thread_id=thread_id
+                )
                 doc_rows = await session.execute(
                     select(Document.id, Document.title, Document.folder_id).where(
                         readable_documents_filter(index, self.search_space_id)
