@@ -288,6 +288,17 @@ class NewChatRequest(BaseModel):
     disabled_tools: list[str] | None = (
         None  # Optional list of tool names the user has disabled from the UI
     )
+    simple_rag: bool = Field(
+        default=False,
+        description=(
+            "Answer via the retrieve-then-answer flow instead of the agent: "
+            "the server runs one hybrid search itself and makes a single "
+            "tool-free model call over the retrieved passages. Grounding stops "
+            "depending on the model choosing to retrieve, which is what small "
+            "instruct models fail at. Costs the agent's capabilities — no web "
+            "search, connectors, memory or document writes on this turn."
+        ),
+    )
     filesystem_mode: Literal["cloud", "desktop_local_folder"] = "cloud"
     client_platform: Literal["web", "desktop"] = "web"
     local_filesystem_mounts: list[LocalFilesystemMountPayload] | None = None
@@ -364,6 +375,9 @@ class RegenerateRequest(BaseModel):
         ),
     )
     disabled_tools: list[str] | None = None
+    # Mirrors ``NewChatRequest.simple_rag`` so a regenerate stays on the engine
+    # the original turn used instead of silently switching to the agent.
+    simple_rag: bool = False
     filesystem_mode: Literal["cloud", "desktop_local_folder"] = "cloud"
     client_platform: Literal["web", "desktop"] = "web"
     local_filesystem_mounts: list[LocalFilesystemMountPayload] | None = None

@@ -35,6 +35,7 @@ from app.agents.chat.multi_agent_chat.shared.filesystem_selection import (
     FilesystemMode,
     FilesystemSelection,
 )
+from app.agents.chat.simple_rag import stream_simple_rag
 from app.auth.context import AuthContext
 from app.db import ChatVisibility, async_session_maker
 from app.observability import otel as ot
@@ -140,6 +141,7 @@ async def stream_new_chat(
     user_image_data_urls: list[str] | None = None,
     auth_context: AuthContext | None = None,
     flow: Literal["new", "regenerate"] = "new",
+    simple_rag: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream a new chat turn using the SurfSense deep agent.
 
@@ -147,6 +149,12 @@ async def stream_new_chat(
     LangGraph thread id (durable conversation memory via the checkpointer).
     Manages its own database session so cleanup runs even when Starlette
     cancels the task on client disconnect.
+
+    ``simple_rag`` swaps the agent for the retrieve-then-answer flow in
+    :mod:`app.agents.chat.simple_rag`: the server retrieves first and makes one
+    tool-free model call, for models too small to drive the agent's delegation
+    hops. Everything either side of the stream loop — persistence, citation
+    normalization, token accounting, SSE framing — is shared.
     """
     streaming_service = VercelStreamingService()
     stream_result = StreamResult()
@@ -375,51 +383,65 @@ async def stream_new_chat(
             background_tasks=_background_tasks,
         )
 
-        _t0 = time.perf_counter()
-        connector_service, firecrawl_api_key = await setup_connector_and_firecrawl(
-            session, search_space_id=search_space_id
-        )
-        _perf_log.info(
-            "[stream_new_chat] Connector service + firecrawl key in %.3fs",
-            time.perf_counter() - _t0,
-        )
-
-        _t0 = time.perf_counter()
-        checkpointer = await get_chat_checkpointer()
-        _perf_log.info(
-            "[stream_new_chat] Checkpointer ready in %.3fs", time.perf_counter() - _t0
-        )
-
         visibility = thread_visibility or ChatVisibility.PRIVATE
-        chat_agent_mode = "multi"
-        set_agent_mode(chat_span, chat_agent_mode)
-
-        _t0 = time.perf_counter()
+        connector_service = None
+        firecrawl_api_key = None
+        checkpointer = None
         agent_factory = create_multi_agent_chat_deep_agent
-        # Build the agent inline. Provider 429s surface through the in-stream
-        # recovery loop below, which repins the thread to an eligible
-        # alternative config and rebuilds the agent before the user sees any
-        # output.
-        agent = await build_main_agent_for_thread(
-            agent_factory,
-            llm=llm,
-            search_space_id=search_space_id,
-            db_session=session,
-            connector_service=connector_service,
-            checkpointer=checkpointer,
-            user_id=user_id,
-            thread_id=chat_id,
-            agent_config=agent_config,
-            firecrawl_api_key=firecrawl_api_key,
-            thread_visibility=visibility,
-            filesystem_selection=filesystem_selection,
-            disabled_tools=disabled_tools,
-            mentioned_document_ids=mentioned_document_ids,
-            auth_context=auth_context,
-        )
-        _perf_log.info(
-            "[stream_new_chat] Agent created in %.3fs", time.perf_counter() - _t0
-        )
+        agent = None
+
+        if simple_rag:
+            # The retrieve-then-answer flow binds no tools and keeps no graph
+            # state, so the connector service, the checkpointer and the agent
+            # build are all dead weight — skipping them is most of this path's
+            # latency win.
+            chat_agent_mode = "simple_rag"
+            set_agent_mode(chat_span, chat_agent_mode)
+        else:
+            _t0 = time.perf_counter()
+            connector_service, firecrawl_api_key = await setup_connector_and_firecrawl(
+                session, search_space_id=search_space_id
+            )
+            _perf_log.info(
+                "[stream_new_chat] Connector service + firecrawl key in %.3fs",
+                time.perf_counter() - _t0,
+            )
+
+            _t0 = time.perf_counter()
+            checkpointer = await get_chat_checkpointer()
+            _perf_log.info(
+                "[stream_new_chat] Checkpointer ready in %.3fs",
+                time.perf_counter() - _t0,
+            )
+
+            chat_agent_mode = "multi"
+            set_agent_mode(chat_span, chat_agent_mode)
+
+            _t0 = time.perf_counter()
+            # Build the agent inline. Provider 429s surface through the
+            # in-stream recovery loop below, which repins the thread to an
+            # eligible alternative config and rebuilds the agent before the
+            # user sees any output.
+            agent = await build_main_agent_for_thread(
+                agent_factory,
+                llm=llm,
+                search_space_id=search_space_id,
+                db_session=session,
+                connector_service=connector_service,
+                checkpointer=checkpointer,
+                user_id=user_id,
+                thread_id=chat_id,
+                agent_config=agent_config,
+                firecrawl_api_key=firecrawl_api_key,
+                thread_visibility=visibility,
+                filesystem_selection=filesystem_selection,
+                disabled_tools=disabled_tools,
+                mentioned_document_ids=mentioned_document_ids,
+                auth_context=auth_context,
+            )
+            _perf_log.info(
+                "[stream_new_chat] Agent created in %.3fs", time.perf_counter() - _t0
+            )
 
         # --- Block 3: Input assembly ---
 
@@ -690,29 +712,47 @@ async def stream_new_chat(
             )
             return new_agent
 
-        async for sse in run_stream_loop(
-            agent=agent,
-            streaming_service=streaming_service,
-            config=config,
-            input_data=input_state,
-            stream_result=stream_result,
-            step_prefix="thinking",
-            initial_step_id=initial_step_id,
-            initial_step_title=initial_step_title,
-            initial_step_items=initial_step_items,
-            fallback_commit_search_space_id=search_space_id,
-            fallback_commit_created_by_id=user_id,
-            fallback_commit_filesystem_mode=(
-                filesystem_selection.mode
-                if filesystem_selection
-                else FilesystemMode.CLOUD
-            ),
-            fallback_commit_thread_id=chat_id,
-            runtime_context=runtime_context,
-            content_builder=stream_result.content_builder,
-            recover=_recover,
-            on_first_event=_on_first_event,
-        ):
+        if simple_rag:
+            turn_stream = stream_simple_rag(
+                llm=llm,
+                search_space_id=search_space_id,
+                question=user_query,
+                streaming_service=streaming_service,
+                stream_result=stream_result,
+                content_builder=stream_result.content_builder,
+                mentioned_document_ids=mentioned_document_ids,
+                # Resolver-vetted subset, so a chip the user can't reach can't
+                # widen the search scope.
+                mentioned_folder_ids=accepted_folder_ids or None,
+                initial_step_id=initial_step_id,
+                initial_step_title=initial_step_title,
+            )
+        else:
+            turn_stream = run_stream_loop(
+                agent=agent,
+                streaming_service=streaming_service,
+                config=config,
+                input_data=input_state,
+                stream_result=stream_result,
+                step_prefix="thinking",
+                initial_step_id=initial_step_id,
+                initial_step_title=initial_step_title,
+                initial_step_items=initial_step_items,
+                fallback_commit_search_space_id=search_space_id,
+                fallback_commit_created_by_id=user_id,
+                fallback_commit_filesystem_mode=(
+                    filesystem_selection.mode
+                    if filesystem_selection
+                    else FilesystemMode.CLOUD
+                ),
+                fallback_commit_thread_id=chat_id,
+                runtime_context=runtime_context,
+                content_builder=stream_result.content_builder,
+                recover=_recover,
+                on_first_event=_on_first_event,
+            )
+
+        async for sse in turn_stream:
             yield sse
             # Inject the title update mid-stream as soon as the background
             # task finishes; gated so we emit at most once.

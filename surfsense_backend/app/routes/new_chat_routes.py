@@ -1809,6 +1809,7 @@ async def handle_new_chat(
                 request_id=getattr(http_request.state, "request_id", "unknown"),
                 user_image_data_urls=image_urls,
                 auth_context=auth,
+                simple_rag=request.simple_rag,
             ),
             media_type="text/event-stream",
             headers={
@@ -2308,6 +2309,7 @@ async def regenerate_response(
                     user_image_data_urls=regenerate_image_urls or None,
                     auth_context=auth,
                     flow="regenerate",
+                    simple_rag=request.simple_rag,
                 ):
                     yield chunk
                 streaming_completed = True

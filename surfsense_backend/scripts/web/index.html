@@ -316,9 +316,9 @@
         </div>
         <div class="opts">
           <label>
-            <input type="checkbox" id="forceSearch" checked>
-            Force retrieval
-            <span title="Prepends the directive from ask.sh's build_query() that compels the agent to call search_knowledge_base. Without it, weaker models answer from memory.">ⓘ</span>
+            <input type="checkbox" id="simpleRag" checked>
+            Retrieve then answer
+            <span title="On: the server searches the knowledge base itself and the model answers from those passages in one tool-free call — grounded even on small local models. Off: the full agent decides for itself whether to retrieve, and can also use web search, connectors and memory.">ⓘ</span>
           </label>
           <span id="ctx" class="mono"></span>
         </div>
@@ -379,7 +379,7 @@ const state = {
   backend: "http://localhost:8000",
   email: "", password: "", apiKey: "",
   model: "deepseek-chat", modelBase: "https://api.deepseek.com/v1",
-  forceSearch: true,
+  simpleRag: true,
   spaceId: null, threadId: null, threadTitle: "",
   lastReportId: null,   // most recent report in this thread; the default for /export and /revise
   isAdmin: false,       // is_superuser — gates the Admin panel (server also enforces it)
@@ -415,7 +415,7 @@ function savePrefs() {
     apiKey: INJECTED_KEY ? "" : state.apiKey,
     model: INJECTED_MODEL ? "" : state.model,
     modelBase: INJECTED_BASE ? "" : state.modelBase,
-    forceSearch: state.forceSearch,
+    simpleRag: state.simpleRag,
     byUser,
   }));
 }
@@ -1079,55 +1079,6 @@ function renderTemplates() {
 /* ------------------------------------------------------------------- chat */
 
 /**
- * The backend has no "always retrieve" switch: whether search_knowledge_base runs
- * is the model's own choice. Weaker models skip it and answer from memory, so we
- * compel retrieval in-band — verbatim from ask.sh's build_query().
- */
-function buildQuery(q) {
-  if (!state.forceSearch) return q;
-  return `<instructions>
-Before answering you MUST search the knowledge base: delegate to the knowledge_base
-subagent and call search_knowledge_base at least once. Do not answer from prior
-knowledge alone. Never tell the user to check their knowledge base — search it yourself.
-
-The question may not be in English, and the indexed documents may be in a different
-language than the question. Search using terms in the language of the documents; if
-unsure, search once in the document language and once in English. Then answer in the
-same language the user used, citing the retrieved passages.
-
-Anything you write BEFORE the final answer — narrating what you are about to do, e.g.
-"Let me search the knowledge base" — MUST be written in Vietnamese, whatever language
-the question is in. Write it as, for example: "Để tôi tìm trong kho tri thức…".
-This applies only to that narration; the final answer still follows the rule above.
-
-Answer ONLY from passages returned by search_knowledge_base.
-
-Cite as you go. Every sentence that uses a retrieved passage MUST carry that
-passage's bracket label, copied exactly as the retrieved context shows it — e.g. [3],
-or [3][7] when two passages support the same claim. Write the bare label and nothing
-else: no [citation:...], no markdown links, no footnotes, and no "References" or
-"Sources" section at the end. Never invent a label you were not shown, and never
-renumber the ones you were. An uncited answer is a failed answer.
-
-If the search returns nothing relevant, reply with a single short sentence saying the
-knowledge base contains no information on the question, in the user's language. Then stop.
-In that case you must NOT:
-  - list, name, or describe any file, document title, folder, or directory path;
-  - report what the knowledge base does or does not contain beyond that one sentence;
-  - speculate about the subject from your own knowledge;
-  - offer to search the web, or ask the user to upload anything.
-
-Never reveal filenames, folder names, or paths from tool output — including from ls or
-any filesystem tool — unless the user explicitly asked which documents exist. Cite
-sources by their title only.
-</instructions>
-
-<question>
-${q}
-</question>`;
-}
-
-/**
  * Accumulates the turn's text blocks as they stream.
  *
  * The stream carries text as text-start / text-delta / text-end triples keyed by a
@@ -1161,8 +1112,11 @@ function textBlocks() {
  * `opts` lets a slash command reuse the whole streaming/settle path without
  * duplicating it:
  *   opts.display  — text shown in the user bubble (default: `question`)
- *   opts.query    — the actual user_query sent to the backend (default: the
- *                   force-retrieval wrapping of `question`)
+ *   opts.query    — the actual user_query sent to the backend (default: `question`)
+ *   opts.agent    — force the full agent for this turn, whatever the
+ *                   "Retrieve then answer" checkbox says. Commands that need a
+ *                   tool (/report, /revise → generate_report) set it, because
+ *                   the retrieve-then-answer path binds no tools at all.
  *   opts.onDone   — awaited after the answer settles (used by /report to find
  *                   and announce the report the generate_report tool just wrote)
  */
@@ -1185,7 +1139,11 @@ async function ask(question, opts = {}) {
       json: {
         chat_id: state.threadId,
         search_space_id: state.spaceId,
-        user_query: opts.query ?? buildQuery(question),
+        user_query: opts.query ?? question,
+        // The server retrieves first and answers in one tool-free call. The
+        // rules that used to be smuggled into user_query now live in the
+        // backend's simple_rag system prompt.
+        simple_rag: opts.agent ? false : state.simpleRag,
       },
     });
 
@@ -1319,9 +1277,10 @@ function describeEvent(ev) {
 //
 // Slash commands typed into the composer. /report and /revise drive the backend's
 // existing generate_report tool (in the `deliverables` subagent, reachable via the
-// `task` delegation tool) with a compelling directive — the same trick buildQuery()
-// uses to force retrieval — rather than any new endpoint. /export and /reports use
-// the report CRUD/export routes as-is.
+// `task` delegation tool) with a compelling directive, rather than any new
+// endpoint — so they always run on the agent (`agent: true`), never on the
+// tool-free retrieve-then-answer path. /export and /reports use the report
+// CRUD/export routes as-is.
 
 const EXPORT_FORMATS = ["pdf", "docx", "html", "latex", "epub", "odt", "plain", "md"];
 
@@ -1343,9 +1302,10 @@ async function runCommand(line) {
 }
 
 /**
- * Wrap a report request in a directive that MUST reach generate_report. Mirrors
- * buildQuery(): the tool is two delegation hops away (supervisor → deliverables →
- * generate_report), so weaker models need to be told the exact path. kb_search
+ * Wrap a report request in a directive that MUST reach generate_report. The tool
+ * is two delegation hops away (supervisor → deliverables → generate_report), so
+ * weaker models need to be told the exact path — and often still miss it, which
+ * is why the answer path stopped relying on directives like this one. kb_search
  * lets the tool pull its own sources from the knowledge base.
  *
  * Written in Vietnamese — the knowledge bases this deployment serves are
@@ -1446,6 +1406,9 @@ async function reportCommand(request, parentId = null) {
   await ask(request, {
     display: (parentId ? `/revise ${parentId} ` : `/report ${tpl ? `t${tpl.id} ` : ""}`) + request,
     query: buildReportQuery(request, parentId, tpl),
+    // generate_report is a tool, so this turn needs the agent regardless of
+    // the "Retrieve then answer" setting.
+    agent: true,
     onDone: async ({ setStatus }) => {
       const rep = await newestReportSince(before);
       if (!rep) {
@@ -2132,7 +2095,7 @@ function init() {
   $("#apiKey").value = state.apiKey;
   $("#model").value = state.model;
   $("#modelBase").value = state.modelBase;
-  $("#forceSearch").checked = state.forceSearch;
+  $("#simpleRag").checked = state.simpleRag;
 
   // Whatever came from the server, don't ask for (and don't let it be edited).
   if (INJECTED_KEY) $("#apiKeyRow").classList.add("hide");
@@ -2197,7 +2160,7 @@ function init() {
   };
   $("#importToken").addEventListener("keydown", (e) => e.key === "Enter" && $("#importBtn").click());
 
-  $("#forceSearch").onchange = (e) => { state.forceSearch = e.target.checked; savePrefs(); };
+  $("#simpleRag").onchange = (e) => { state.simpleRag = e.target.checked; savePrefs(); };
 
   // Citation chips are re-created on every repaint of a streaming answer, so the
   // listener lives on the container instead of the chips.
