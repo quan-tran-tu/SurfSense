@@ -6,7 +6,9 @@
     ./serve.py --deepseek sk-... --port 39317       # odd port (see the CSRF note below)
     DEEPSEEK_API_KEY=sk-... ./serve.py              # same, from the environment
 
---deepseek wins when both are given. --vllm points the page at the vLLM
+An explicit flag picks the backend; DEEPSEEK_API_KEY / VLLM_MODEL from the
+environment only fill in when neither flag was given. --deepseek wins when both
+flags are given. --vllm points the page at the vLLM
 container's OpenAI-compatible endpoint, http://localhost:<vllm_port>/v1 as seen
 FROM THE BACKEND (the backend dials the model, not the browser), with the
 placeholder key vLLM expects ("EMPTY") - so the login screen asks for nothing.
@@ -103,15 +105,17 @@ def main() -> int:
     p.add_argument(
         "--deepseek",
         metavar="KEY",
-        default=os.environ.get("DEEPSEEK_API_KEY", ""),
-        help="DeepSeek API key to bake into the page (default: $DEEPSEEK_API_KEY)",
+        default="",
+        help="DeepSeek API key to bake into the page "
+        "(falls back to $DEEPSEEK_API_KEY when neither model flag is given)",
     )
     p.add_argument(
         "--vllm",
         metavar="MODEL",
-        default=os.environ.get("VLLM_MODEL", ""),
+        default="",
         help="serve against a local vLLM container instead: the model name as vLLM "
-        "exposes it (default: $VLLM_MODEL). Ignored when --deepseek is given.",
+        "exposes it (falls back to $VLLM_MODEL when neither model flag is given). "
+        "Ignored when --deepseek is given.",
     )
     p.add_argument(
         "--vllm_port",
@@ -132,6 +136,13 @@ def main() -> int:
     port = args.port_flag or args.port
     key = args.deepseek.strip()
     vllm_model = args.vllm.strip()
+
+    # An explicit flag picks the backend; the environment only fills in when
+    # neither flag was given, so a stray exported DEEPSEEK_API_KEY cannot
+    # override an explicit --vllm.
+    if not key and not vllm_model:
+        key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        vllm_model = os.environ.get("VLLM_MODEL", "").strip()
 
     # --deepseek wins; --vllm only applies when no DeepSeek key was given.
     config: dict = {}
