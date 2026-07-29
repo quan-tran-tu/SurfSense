@@ -112,19 +112,22 @@ boundary, so user A can never see or delete user B's documents. This client
 never lets you name a space by id. Because the space name matches, `ask.sh` and
 this page share one knowledge base — ingest from the CLI, ask from the browser.
 
-**Uploads are scoped to the session you upload them in.** **+ Add** stamps the
-folder with the open session's thread id (`folders.owner_thread_id`): only that
-session's agent can see, search, or cite it. Other sessions — yours included —
-don't even see it in their workspace tree. The **Folders** list shows every
-folder with a badge (`this session` / `session #n`), and the **⤴** button
-promotes one to **space-wide** ("general knowledge"): the stamp is cleared on
-the whole subtree and every session sees it from the next question on. Nothing
-is copied or re-embedded by promotion, and there is no demotion — re-upload
-inside a session instead. Two sessions may each upload a folder with the same
+**Uploads are space-wide unless you ask for otherwise.** **+ Add** indexes the
+folder into the search space, where every session can retrieve and cite it —
+the same as `ask.sh`. Tick **this session only** first and the upload is instead
+stamped with the open session's thread id (`folders.owner_thread_id`): only that
+session's agent can see, search, or cite it, and other sessions — yours included
+— don't even see it in their workspace tree. Leave it off unless you mean it; a
+folder stamped for a session you later abandon is invisible everywhere until you
+promote it.
+
+The **Folders** list badges every scoped folder (`this session` / `session #n`),
+and the **⤴** button promotes one to space-wide: the stamp is cleared on the
+whole subtree and every session sees it from the next question on. Nothing is
+copied or re-embedded by promotion, and there is no demotion — re-upload with
+the box ticked instead. Two sessions may each upload a folder with the same
 name; they are distinct folders with distinct documents. Sharing (`Share`) is
-only offered on space-wide folders — promote first, then share. Uploads made
-with no session open (or by `ask.sh`, which predates this) are space-wide, which
-is exactly the old behavior.
+only offered on space-wide folders — promote first, then share.
 
 ## Chat commands
 

@@ -262,6 +262,13 @@
         <button id="addFolderBtn" class="sm">+ Add</button>
       </h2>
       <input id="folderPicker" type="file" webkitdirectory directory multiple class="hide">
+      <div class="opts" style="max-width:none;margin:6px 0 0">
+        <label>
+          <input type="checkbox" id="sessionScoped">
+          This session only
+          <span title="Off (the default): the folder is space-wide — every session retrieves it. On: only the session open at upload time sees it, until ⤴ promotes it.">ⓘ</span>
+        </label>
+      </div>
       <div id="folders"></div>
       <div id="ingest" class="hide">
         <div class="note" id="ingestMsg"></div>
@@ -817,10 +824,12 @@ async function ingest(fileList) {
   const { root, files, paths } = collectFiles(fileList);
   if (!files.length) { toast("No indexable files in that folder.", "warn"); return; }
 
-  // Uploads are scoped to the current chat session: only this session's agent
-  // sees the folder until it is promoted (⤴ in the Folders panel). Without an
-  // open session the upload falls back to space-wide, like before.
-  const threadId = state.threadId ?? null;
+  // Uploads are space-wide unless "this session only" is ticked: the backend
+  // scopes a folder to whichever thread_id we send (invisible to every other
+  // session until ⤴ promotes it), and we always have a session open —
+  // resumeSession() opens or creates one at boot — so sending it unconditionally
+  // would strand every upload in the session that happened to be open.
+  const threadId = $("#sessionScoped").checked ? (state.threadId ?? null) : null;
 
   // The KB label is the basename, never a full disk path: it becomes Folder.name,
   // which the agent sees as /documents/<name>/… — a full path would leak the
@@ -1564,8 +1573,9 @@ function helpCommand() {
     "",
     "Anything without a leading / is asked against your knowledge base.",
     "",
-    "Folders you upload are visible only in the session you uploaded them in.",
-    "Use ⤴ in the Folders panel to promote one to space-wide (all sessions).",
+    "Folders you upload are space-wide: every session can retrieve them. Tick",
+    "\"this session only\" before adding one to keep it private to this session;",
+    "⤴ in the Folders panel promotes such a folder back to space-wide.",
   ].join("\n"));
 }
 
