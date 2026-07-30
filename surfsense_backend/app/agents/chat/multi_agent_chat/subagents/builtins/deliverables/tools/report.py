@@ -17,6 +17,7 @@ guess them back.
 """
 
 import asyncio
+import itertools
 import json
 import logging
 import re
@@ -31,6 +32,7 @@ from langgraph.types import Command
 
 from app.agents.chat.multi_agent_chat.shared.receipts.command import with_receipt
 from app.agents.chat.multi_agent_chat.shared.receipts.receipt import make_receipt
+from app.agents.chat.shared.message_text import describe_content, message_text
 from app.agents.chat.multi_agent_chat.subagents.builtins.deliverables.tools.thread_resolver import (
     resolve_root_thread_id,
 )
@@ -365,8 +367,8 @@ async def _revise_with_sections(
 
     try:
         response = await llm.ainvoke([HumanMessage(content=identify_prompt)])
-        raw = response.content
-        if not raw or not isinstance(raw, str):
+        raw = message_text(response)
+        if not raw:
             return None
 
         raw = _strip_wrapping_code_fences(raw).strip()
@@ -483,8 +485,8 @@ async def _revise_with_sections(
         )
 
         resp = await llm.ainvoke([HumanMessage(content=revise_prompt)])
-        revised_text = resp.content
-        if revised_text and isinstance(revised_text, str):
+        revised_text = message_text(resp)
+        if revised_text:
             revised_text = _strip_wrapping_code_fences(revised_text).strip()
             revised_parsed = _parse_sections(revised_text)
             if revised_parsed:
@@ -542,8 +544,8 @@ async def _revise_with_sections(
         )
 
         resp = await llm.ainvoke([HumanMessage(content=new_prompt)])
-        new_content = resp.content
-        if new_content and isinstance(new_content, str):
+        new_content = message_text(resp)
+        if new_content:
             new_content = _strip_wrapping_code_fences(new_content).strip()
             new_parsed = _parse_sections(new_content)
             if new_parsed:
@@ -733,40 +735,54 @@ async def generate_report_document(
                 f"{query_count} queries: {search_queries[:5]}"
             )
             try:
-                from app.agents.chat.multi_agent_chat.shared.retrieval.hybrid_search import (
-                    search_chunks,
-                )
-                from app.agents.chat.multi_agent_chat.shared.retrieval.models import (
+                from app.agents.chat.multi_agent_chat.shared.retrieval import (
+                    DEFAULT_TOP_K,
                     DocumentHit,
                     SearchScope,
+                    search_knowledge_base_hits,
                 )
+                from app.agents.chat.shared.search_query import build_search_terms
+                from app.services.reranker_service import RerankerService
 
                 scope = SearchScope(
                     document_types=_report_search_types(
                         available_connectors, available_document_types
                     )
                 )
+                reranker = RerankerService.get_reranker_instance()
 
-                # Each query gets its own short-lived session.
+                # Each query gets its own short-lived session. Deliberately the
+                # same seam, term expansion, top_k and reranker as the simple_rag
+                # flow: what a /report retrieves for a question should not differ
+                # from what asking that question retrieves. Only the rendering
+                # differs, further down — reports ship without [n] citations.
                 async def _run_single_query(q: str) -> list[DocumentHit]:
                     async with shielded_async_session() as kb_session:
-                        return await search_chunks(
+                        return await search_knowledge_base_hits(
                             kb_session,
                             search_space_id=search_space_id,
                             query=q,
                             scope=scope,
-                            top_k=10,
+                            reranker=reranker,
+                            top_k=DEFAULT_TOP_K,
+                            keyword_terms=build_search_terms(q) or None,
                         )
 
                 hits_per_query = await asyncio.gather(
                     *[_run_single_query(q) for q in search_queries[:5]]
                 )
 
+                # Interleaved by rank, not concatenated query by query. The
+                # merged text is capped at 100k chars below, and one query's
+                # results can exceed that on their own — so appending whole
+                # queries in order lets the first one spend the entire budget
+                # and silently drops the other four. Round-robin spends it on
+                # each query's best hit first.
                 seen_doc_ids: set[int] = set()
                 merged_hits: list[DocumentHit] = []
-                for hits in hits_per_query:
-                    for hit in hits:
-                        if hit.document_id in seen_doc_ids:
+                for ranked_group in itertools.zip_longest(*hits_per_query):
+                    for hit in ranked_group:
+                        if hit is None or hit.document_id in seen_doc_ids:
                             continue
                         seen_doc_ids.add(hit.document_id)
                         merged_hits.append(hit)
@@ -835,6 +851,9 @@ async def generate_report_document(
         # ── Phase 2: LLM GENERATION (no DB connection held) ──────────
 
         report_content: str | None = None
+        # Only set on the paths that call the model directly; section-level
+        # revision assembles its content from several calls of its own.
+        response: Any = None
 
         if parent_report_content:
             # Revision mode: section-level first (preserves untouched
@@ -879,7 +898,7 @@ async def generate_report_document(
                     formatting_rules=_FORMATTING_RULES,
                 )
                 response = await llm.ainvoke([HumanMessage(content=prompt)])
-                report_content = response.content
+                report_content = message_text(response)
 
         else:
             # New report: single-shot generation (one LLM call).
@@ -900,10 +919,18 @@ async def generate_report_document(
                 formatting_rules=_FORMATTING_RULES,
             )
             response = await llm.ainvoke([HumanMessage(content=prompt)])
-            report_content = response.content
+            report_content = message_text(response)
 
-        if not report_content or not isinstance(report_content, str):
+        if not report_content:
             error_msg = "LLM returned empty or invalid content"
+            # The response object itself is the only thing that distinguishes a
+            # model that said nothing from one whose answer arrived in a shape
+            # this code failed to read — and the trace will show a full answer
+            # in the second case, so log the shape rather than guessing later.
+            logger.warning(
+                "[generate_report] No text in model response (%s)",
+                describe_content(response) if response is not None else "no response",
+            )
             report_id = await _save_failed_report(error_msg)
             return _failed(
                 {

@@ -20,6 +20,8 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
+from app.agents.chat.shared.message_text import describe_content, message_text
+
 logger = logging.getLogger(__name__)
 
 _MAX_TOPIC_WORDS = 12
@@ -119,7 +121,16 @@ async def plan_report_request(
     prompt = _PLAN_PROMPT.format(max_queries=max_queries, request=request)
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        raw = response.content if isinstance(response.content, str) else ""
+        # Not ``response.content``: a reasoning model returns a list of content
+        # blocks, which the old isinstance check read as "no answer" and turned
+        # into a silent fallback to the raw request — a blunter search, with
+        # nothing in the logs to say the plan had actually come back fine.
+        raw = message_text(response)
+        if not raw:
+            logger.warning(
+                "[plan_report_request] No text in planning response (%s)",
+                describe_content(response),
+            )
     except Exception:
         logger.exception("[plan_report_request] Planning call failed; using raw request")
         return _fallback_topic(request), [request]

@@ -281,7 +281,8 @@
         Report templates
         <button id="addTplBtn" class="sm">+ Add</button>
       </h2>
-      <input id="tplPicker" type="file" accept=".docx,.pdf,.md,.markdown,.txt" multiple class="hide">
+      <!-- No accept filter: the server converter decides what it can read. -->
+      <input id="tplPicker" type="file" multiple class="hide">
       <div id="templates"></div>
     </section>
 
@@ -958,13 +959,18 @@ async function removeImport(link) {
 // reaches the model inside the /report directive.
 //
 // .docx is the preferred format — real Vietnamese reports live in Word — and
-// the browser can't read it, so those (and .pdf) are converted server-side by
-// POST /documents/extract-markdown, which runs the backend's ETL service
-// (docling). .md/.txt are accepted too and read locally.
+// the browser can't read it, so anything that isn't plain text is converted
+// server-side by POST /documents/extract-markdown, which runs the backend's ETL
+// service (docling). .md/.txt are read locally.
+//
+// Nothing but size is checked before upload: what docling can read is docling's
+// call, and an exemplar without parseable headings still teaches style. A file
+// that really cannot be converted fails in the request, with the server's reason.
 
 const TPL_TEXT_EXT = /\.(md|markdown|txt)$/i;   // readable in the browser
-const TPL_CONVERT_EXT = /\.(docx|pdf)$/i;       // server-converted via docling
-const TPL_NAME_EXT = /\.(docx|pdf|md|markdown|txt)$/i;
+// Any other extension is sent to the server converter, which decides what it
+// can read. Requiring a leading letter keeps "Báo cáo v1.2" from losing ".2".
+const TPL_NAME_EXT = /\.[a-z][a-z0-9]{0,7}$/i;
 
 const TPL_MAX_BYTES = 20 * 1024 * 1024;  // matches the backend conversion cap
 const TPL_STORE_CHARS = 20000;      // how much of the template body we keep
@@ -1009,12 +1015,14 @@ async function templateText(f) {
   return (res?.markdown ?? "").trim();
 }
 
+// Size is the only thing checked before upload. Extension and outline gates
+// were rejecting files the pipeline handles fine: docling reads more formats
+// than the extension list named, and a report whose structure this parser
+// cannot see is still a usable style exemplar — the excerpt reaches the model
+// either way. Anything genuinely unreadable fails in conversion below, where
+// the server says why.
 async function addTemplates(files) {
   for (const f of files) {
-    if (!TPL_CONVERT_EXT.test(f.name) && !TPL_TEXT_EXT.test(f.name)) {
-      toast(`"${f.name}": upload the report as .docx (preferred) — .pdf, .md and .txt also work.`, "warn", 10000);
-      continue;
-    }
     if (f.size > TPL_MAX_BYTES) {
       toast(`"${f.name}" is over ${Math.round(TPL_MAX_BYTES / (1024 * 1024))}MB — too large for a template.`, "warn");
       continue;
@@ -1026,13 +1034,12 @@ async function addTemplates(files) {
       toast(`Could not convert "${f.name}": ${e.message}`, "err", 12000);
       continue;
     }
-
-    const outline = extractOutline(text);
-    if (outline.length < 2) {
-      toast(`"${f.name}" doesn't look like a valid report format: no section headings found. ` +
-            `A template needs headings such as "# Tiêu đề", "PHẦN I:", "1. Mở đầu", or ALL-CAPS lines.`, "warn", 12000);
+    if (!text) {
+      toast(`"${f.name}" converted to an empty document — nothing to use as a template.`, "warn", 10000);
       continue;
     }
+
+    const outline = extractOutline(text);
     const id = state.templates.reduce((m, t) => Math.max(m, t.id), 0) + 1;
     state.templates.push({
       id,
@@ -1040,7 +1047,10 @@ async function addTemplates(files) {
       outline,
       content: text.slice(0, TPL_STORE_CHARS),
     });
-    toast(`Template t${id} — "${f.name}" added (${outline.length} sections). Use it: /report t${id} <query>`, "ok", 9000);
+    const shape = outline.length
+      ? `${outline.length} sections`
+      : "no headings detected — style only";
+    toast(`Template t${id} — "${f.name}" added (${shape}). Use it: /report t${id} <query>`, "ok", 9000);
   }
   savePrefs();
   renderTemplates();
@@ -1067,7 +1077,11 @@ function renderTemplates() {
     row.innerHTML = `<span class="name"></span><button class="sm act danger" data-a="rm">✕</button>`;
     row.querySelector(".name").textContent = `t${t.id} · ${t.name}`;
     row.onclick = () => addSystemNote(
-      `Template t${t.id} — ${t.name}\n\nSections:\n${t.outline.join("\n")}\n\nUse it: /report t${t.id} <query>`);
+      `Template t${t.id} — ${t.name}\n\n` +
+      (t.outline.length
+        ? `Sections:\n${t.outline.join("\n")}`
+        : "No headings detected — this template is used as a style exemplar only.") +
+      `\n\nUse it: /report t${t.id} <query>`);
     row.querySelector('[data-a="rm"]').onclick = (e) => {
       e.stopPropagation();
       if (confirm(`Remove template t${t.id} "${t.name}"?`)) removeTemplate(t.id);
@@ -1314,15 +1328,19 @@ function buildReportInstructions(request, tpl = null) {
   const ask = request.trim() ? `\n\nYêu cầu của người dùng:\n${request.trim()}` : "";
   if (!tpl) return base + ask;
 
+  // The outline block is omitted when no headings were detected: an empty
+  // "Bố cục" heading reads as "this report has no sections", which is worse
+  // guidance than saying nothing and letting the excerpt carry the structure.
+  const outlineBlock = tpl.outline.length
+    ? `\n\nBố cục các phần của báo cáo mẫu:\n${tpl.outline.join("\n")}`
+    : "";
+
   return `${base}
 
 Báo cáo PHẢI theo đúng định dạng của báo cáo mẫu "${tpl.name}" dưới đây: giữ đúng
 bố cục, thứ tự các phần và cách đặt tiêu đề; bắt chước văn phong, cách hành văn và
 cách trình bày của trích đoạn mẫu. Chỉ thay nội dung cho phù hợp với chủ đề được
-yêu cầu.
-
-Bố cục các phần của báo cáo mẫu:
-${tpl.outline.join("\n")}
+yêu cầu.${outlineBlock}
 
 Trích đoạn của báo cáo mẫu (để bắt chước văn phong và cách viết):
 ${tpl.content.slice(0, TPL_PROMPT_CHARS)}${ask}`;
@@ -1507,12 +1525,14 @@ async function listReportsCommand() {
 async function listTemplatesCommand() {
   if (!state.templates.length) {
     addSystemNote("No report templates uploaded yet. Add one in the sidebar " +
-      "(Report templates → + Add): a sample report as .docx (preferred), .pdf, .md or .txt, " +
-      "with clear section headings.");
+      "(Report templates → + Add): any sample report the server can convert — " +
+      ".docx is preferred, .pdf, .md and .txt work too.");
     return;
   }
   addSystemNote("Report templates:\n" +
-    state.templates.map((t) => `t${t.id} — ${t.name} (${t.outline.length} sections)`).join("\n") +
+    state.templates.map((t) =>
+      `t${t.id} — ${t.name} (${t.outline.length ? `${t.outline.length} sections` : "style only"})`
+    ).join("\n") +
     "\n\nUse one: /report t<id> <what the report should cover>");
 }
 

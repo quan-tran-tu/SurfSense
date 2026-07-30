@@ -39,25 +39,19 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.chat.multi_agent_chat.shared.citations import CitationRegistry
 from app.agents.chat.multi_agent_chat.shared.retrieval import (
+    DEFAULT_TOP_K,
     SearchScope,
     search_knowledge_base_context,
 )
 from app.agents.chat.runtime.references import referenced_document_ids
+from app.agents.chat.shared.search_query import build_search_terms
 from app.db import shielded_async_session
 from app.tasks.chat.streaming.helpers.chunk_parts import extract_chunk_parts
 from app.utils.perf import get_perf_logger
 
 from .prompt import NO_RESULTS_MESSAGE, SIMPLE_RAG_SYSTEM_PROMPT
-from .search_query import build_search_terms
 
 _perf_log = get_perf_logger()
-
-# Higher than the agent path's per-call default because this flow gets one
-# retrieval per turn instead of one per tool call: breadth has to come from a
-# single search rather than from the union of several. Note this also scales the
-# candidate pool (``_CANDIDATE_MULTIPLIER``), and therefore how much context the
-# prompt can grow to — the ceiling is roughly ``top_k * 5`` chunks.
-_DEFAULT_TOP_K = 16
 
 
 async def _retrieve(
@@ -114,7 +108,7 @@ async def stream_simple_rag(
     mentioned_folder_ids: list[int] | None = None,
     initial_step_id: str | None = None,
     initial_step_title: str = "",
-    top_k: int = _DEFAULT_TOP_K,
+    top_k: int = DEFAULT_TOP_K,
     no_results_message: str = NO_RESULTS_MESSAGE,
 ) -> AsyncGenerator[str, None]:
     """Retrieve, then stream one grounded answer. Yields SSE frames.

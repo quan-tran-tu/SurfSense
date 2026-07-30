@@ -1,10 +1,11 @@
-"""Turn the user's question into keyword-search terms.
+"""Turn a natural-language request into keyword-search terms.
 
-This flow searches with the question verbatim, which is most of what it gives up
-against the agent path. There, a capable model rewrites the question into a
-search query before calling the tool — dropping the instruction words, keeping
-the entities, and spelling a date out in several formats. That rewrite is the
-step this module replaces, deterministically and without a model call.
+Used by every surface that searches on text a person wrote rather than on a
+query a model composed: the ``simple_rag`` flow (the user's question verbatim)
+and the report pipeline (the planner's queries). A capable model calling the
+search tool rewrites the question first — dropping the instruction words,
+keeping the entities, spelling a date out in several formats. That rewrite is
+the step this module replaces, deterministically and without a model call.
 
 Two things go wrong when a whole question is used as a query:
 
@@ -19,10 +20,12 @@ So :func:`build_search_terms` returns independent OR-terms: content words with
 the instruction scaffolding stripped, plus every date in a detected range
 written in the formats a corpus is likely to use. The caller passes them as
 ``keyword_terms``, which only ever widens the keyword leg — the semantic leg and
-the reranker keep the original question, so expansion cannot dilute them.
+the reranker keep the original text, so expansion cannot dilute them.
 
-Deliberately not a model call: a flow that exists because the model is too small
-to choose a tool is not a flow that should trust that model to write its query.
+Deliberately not a model call. ``simple_rag`` exists because the model is too
+small to choose a tool, so it is not a flow that should trust that model to
+write its query; and on the report path the planner has already spent its one
+generation deciding *what* to look for.
 """
 
 from __future__ import annotations

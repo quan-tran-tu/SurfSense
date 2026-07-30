@@ -1,4 +1,4 @@
-"""Behavior tests for simple_rag keyword-term expansion.
+"""Behavior tests for keyword-term expansion.
 
 These assert on what the terms let the keyword leg match — the interior of a
 date range, the topical words, the formats a corpus might use — never on term
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agents.chat.simple_rag.search_query import build_search_terms
+from app.agents.chat.shared.search_query import build_search_terms
 
 pytestmark = pytest.mark.unit
 
