@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.chat.runtime.path_resolver import (
@@ -73,10 +73,10 @@ class ResolvedMentionSet:
     ``@Project Roadmap`` is never shadowed by a shorter prefix
     ``@Project``).
 
-    ``mentioned_document_ids`` is an ordered, deduped list consumed by
-    the on-demand ``search_knowledge_base`` tool downstream (via
-    ``referenced_document_ids``) to pin @-mentioned docs into the
-    retrieval scope.
+    ``mentioned_document_ids`` / ``mentioned_folder_ids`` are ordered,
+    deduped lists that become the downstream retrieval scope
+    (``SearchScope.document_ids`` / ``.folder_ids``): the search is
+    confined to those documents and to the subtrees of those folders.
     """
 
     mentions: list[ResolvedMention] = field(default_factory=list)
@@ -116,9 +116,8 @@ async def resolve_mentions(
     * Legacy clients that haven't migrated to the unified chip list
       still send the id arrays — we treat the union as authoritative.
     * The id arrays are the canonical input to the retrieval scope
-      (via ``SurfSenseContextSchema`` → ``referenced_document_ids``);
-      returning the deduped, validated lists lets the route forward
-      them unchanged.
+      (via ``SurfSenseContextSchema`` → ``SearchScope``); returning the
+      deduped, validated lists lets the route forward them unchanged.
 
     Resolution is best-effort: a chip whose id no longer exists (e.g.
     document was deleted between mention and submit) is silently
@@ -167,11 +166,17 @@ async def resolve_mentions(
 
     folder_rows: dict[int, Folder] = {}
     if folder_id_pool:
-        result = await session.execute(
-            select(Folder).where(
-                Folder.search_space_id == search_space_id,
-                Folder.id.in_(folder_id_pool),
+        # A folder held by link lives in the *sharer's* space, so space equality
+        # alone would drop it — and a dropped pin silently widens or narrows the
+        # scope the user asked for rather than failing visibly. ``index`` already
+        # resolved which foreign folders this space may read.
+        readable_folder = Folder.search_space_id == search_space_id
+        if index.linked_folder_ids:
+            readable_folder = or_(
+                readable_folder, Folder.id.in_(index.linked_folder_ids)
             )
+        result = await session.execute(
+            select(Folder).where(readable_folder, Folder.id.in_(folder_id_pool))
         )
         for row in result.scalars().all():
             folder_rows[row.id] = row

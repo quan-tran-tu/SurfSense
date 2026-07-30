@@ -25,6 +25,7 @@ from app.agents.chat.runtime.path_resolver import current_thread_id
 from app.config import config
 from app.db import Chunk, Document, DocumentType, Folder
 from app.observability import metrics, otel
+from app.services.folder_service import folder_subtree_ids_subquery
 from app.services.folder_sharing_service import linked_folder_ids_subquery
 from app.utils.perf import get_perf_logger
 
@@ -169,8 +170,20 @@ def _base_conditions(
         )
     if document_types:
         conditions.append(Document.document_type.in_(document_types))
+    # "These documents" and "inside these folders" are one question asked two
+    # ways, so they OR: pinning a folder and a loose document must not yield the
+    # empty intersection. Folder matching covers each root's subtree — an upload
+    # mirrors its directory tree, so an exact match would see only the files
+    # sitting loose at the root.
+    pins = []
     if scope.document_ids:
-        conditions.append(Document.id.in_(scope.document_ids))
+        pins.append(Document.id.in_(scope.document_ids))
+    if scope.folder_ids:
+        pins.append(
+            Document.folder_id.in_(folder_subtree_ids_subquery(scope.folder_ids))
+        )
+    if pins:
+        conditions.append(or_(*pins) if len(pins) > 1 else pins[0])
     if scope.start_date is not None:
         conditions.append(Document.updated_at >= scope.start_date)
     if scope.end_date is not None:

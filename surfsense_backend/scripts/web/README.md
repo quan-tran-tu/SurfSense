@@ -129,6 +129,19 @@ the box ticked instead. Two sessions may each upload a folder with the same
 name; they are distinct folders with distinct documents. Sharing (`Share`) is
 only offered on space-wide folders — promote first, then share.
 
+**Asking inside a subset of your folders.** Tick the checkbox on a folder row (own
+or **Imported**) and every question and report from then on is answered *only*
+from those folders — each one's whole subtree, so an uploaded directory tree is
+covered by ticking its root. This is how you ask "does anything about X appear in
+these two folders?" and get an answer you can trust: with a scope set, "nothing
+found" means nothing found *there*, not somewhere else in the space.
+
+The scope is sticky (an investigation asks many questions of the same subset) and
+survives a reload, so the chip above the composer names it whenever it is on; the
+chip's **✕** searches everything again. `/scope` is the keyboard path — see below.
+A scoped `/report` refuses to write anything when those folders yield no material,
+rather than filling the gap from the model's own memory.
+
 ## Chat commands
 
 Type these in the composer (a leading `/` marks a command; anything else is a
@@ -140,6 +153,7 @@ question). `/help` lists them in-app.
 | `/revise [id] <changes>` | Revises a report (defaults to the last one made in this session) — a new version in the same group. |
 | `/export [id] <format>` | Downloads a report. Formats: `pdf`, `docx`, `html`, `latex`, `epub`, `odt`, `plain`, and `md` (the raw Markdown source). Defaults to the last report, `pdf`. |
 | `/reports` | Lists the reports in this session. |
+| `/scope [ids\|all]` | Shows or sets which folders questions are confined to. `/scope` lists every folder with its id, marking the ones in scope; `/scope 3,5` narrows to two; `/scope all` clears it. Same state as the folder checkboxes. |
 
 Reports live in your search space, so `/reports` re-derives them from the server
 on demand — the in-chat "report ready" notes are just convenience and aren't

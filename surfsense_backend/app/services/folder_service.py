@@ -1,5 +1,7 @@
 """Folder service: depth validation, circular reference checks, and position generation."""
 
+from collections.abc import Sequence
+
 from fastapi import HTTPException
 from fractional_indexing import generate_key_between
 from sqlalchemy import text
@@ -249,6 +251,32 @@ async def get_folder_subtree_ids(session: AsyncSession, folder_id: int) -> list[
         {"folder_id": folder_id},
     )
     return list(result.scalars().all())
+
+
+def folder_subtree_ids_subquery(folder_ids: Sequence[int]):
+    """Selectable yielding every folder id inside the subtrees rooted at ``folder_ids``.
+
+    The embeddable counterpart of :func:`get_folder_subtree_ids`: several roots
+    instead of one, and a subquery instead of a round trip, so a search can say
+    "documents inside these folders" in a single statement.
+
+    Recursion is what makes this usable as a scope. A folder upload mirrors the
+    picked directory tree — ``_resolve_folder_for_file`` creates a ``Folder`` row
+    per subdirectory — so an exact ``folder_id IN (roots)`` predicate matches only
+    the files sitting loose at each root, which for a real document set is close
+    to nothing and reads as "not found" rather than as a bug.
+
+    Deliberately not filtered by search space: a folder reachable by link lives in
+    the sharer's space, and callers already AND in their own readability
+    condition, so restricting here would only break the linked-folder case.
+    """
+    roots = (
+        select(Folder.id.label("id"))
+        .where(Folder.id.in_(list(folder_ids)))
+        .cte("scoped_folders", recursive=True)
+    )
+    descendants = select(Folder.id).join(roots, Folder.parent_id == roots.c.id)
+    return select(roots.union_all(descendants).c.id)
 
 
 async def dispatch_folder_deletion(session: AsyncSession, folder_id: int) -> int:

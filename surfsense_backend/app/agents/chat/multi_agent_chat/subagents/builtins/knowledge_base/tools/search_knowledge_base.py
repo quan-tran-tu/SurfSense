@@ -18,7 +18,6 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.chat.multi_agent_chat.shared.citations import load_registry
 from app.agents.chat.multi_agent_chat.shared.retrieval import SearchScope, build_context
@@ -28,7 +27,6 @@ from app.agents.chat.multi_agent_chat.shared.retrieval.hybrid_search import (
 from app.agents.chat.multi_agent_chat.shared.state.filesystem_state import (
     SurfSenseFilesystemState,
 )
-from app.agents.chat.runtime.references import referenced_document_ids
 from app.db import shielded_async_session
 from app.utils.perf import get_perf_logger
 
@@ -86,24 +84,23 @@ def _resolve_mention_pins(
     )
 
 
-async def _build_search_scope(
-    session: AsyncSession,
+def _build_search_scope(
     *,
-    search_space_id: int,
     document_types: tuple[str, ...] | None,
     runtime: ToolRuntime[None, SurfSenseFilesystemState],
 ) -> SearchScope:
-    """Assemble the retrieval scope: workspace document-type filter + @-mention pins."""
+    """Assemble the retrieval scope: workspace document-type filter + @-mention pins.
+
+    Folder pins go into the scope as folders, not as the documents inside them:
+    the search filters on the folder subtree itself, which needs no expansion
+    round trip and keeps documents reachable only by link (whose ``folder_id``
+    belongs to the sharer's space) inside the scope.
+    """
     mentioned_document_ids, mentioned_folder_ids = _resolve_mention_pins(runtime)
-    document_ids = await referenced_document_ids(
-        session,
-        search_space_id=search_space_id,
-        document_ids=mentioned_document_ids,
-        folder_ids=mentioned_folder_ids,
-    )
     return SearchScope(
         document_types=document_types,
-        document_ids=document_ids or None,
+        document_ids=tuple(mentioned_document_ids) if mentioned_document_ids else None,
+        folder_ids=tuple(mentioned_folder_ids) if mentioned_folder_ids else None,
     )
 
 
@@ -137,13 +134,8 @@ def create_search_knowledge_base_tool(
         registry = load_registry(getattr(runtime, "state", None))
 
         t0 = time.perf_counter()
+        scope = _build_search_scope(document_types=_document_types, runtime=runtime)
         async with shielded_async_session() as session:
-            scope = await _build_search_scope(
-                session,
-                search_space_id=_space_id,
-                document_types=_document_types,
-                runtime=runtime,
-            )
             hits = await search_chunks(
                 session,
                 search_space_id=_space_id,

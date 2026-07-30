@@ -1,13 +1,13 @@
-"""Resolve ``@document`` references.
+"""Resolve ``@document`` references into pointer references for the model.
 
-Two concerns, one subject: ``resolver`` turns document ids into pointer
-references for the model, ``referenced`` turns ``@document`` / ``@folder``
-mentions into the document ids a retrieval is confined to.
+Turning mentions into a *retrieval scope* is a separate job, and no longer done
+here: ``SearchScope`` carries the pinned document and folder ids straight into
+the search predicate (see ``shared/retrieval/hybrid_search.py``), so folders are
+matched by subtree instead of being pre-expanded into document ids.
 """
 
 from __future__ import annotations
 
-from .referenced import referenced_document_ids
 from .resolver import resolve_document_references
 
-__all__ = ["referenced_document_ids", "resolve_document_references"]
+__all__ = ["resolve_document_references"]

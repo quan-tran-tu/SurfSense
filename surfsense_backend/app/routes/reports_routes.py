@@ -302,6 +302,7 @@ async def generate_report_endpoint(
             report_style=request.report_style,
             user_instructions=request.user_instructions,
             parent_report_id=request.parent_report_id,
+            folder_ids=request.folder_ids or None,
         )
 
         return ReportGenerateResponse(

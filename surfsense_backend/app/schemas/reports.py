@@ -43,6 +43,14 @@ class ReportGenerateRequest(BaseModel):
         default=None,
         description="Report title. Derived from `request` when omitted.",
     )
+    folder_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "Confine the knowledge-base search to these folders and everything "
+            "below them — the report is then written only from documents inside "
+            "them. Omit (or send an empty list) to search the whole space."
+        ),
+    )
     search_queries: list[str] | None = Field(
         default=None,
         max_length=5,

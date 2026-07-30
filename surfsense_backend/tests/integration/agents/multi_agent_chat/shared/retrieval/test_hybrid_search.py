@@ -18,7 +18,7 @@ from app.agents.chat.multi_agent_chat.shared.retrieval.hybrid_search import (
 )
 from app.agents.chat.multi_agent_chat.shared.retrieval.models import SearchScope
 from app.config import config
-from app.db import Chunk, Document, DocumentType, SearchSpace
+from app.db import Chunk, Document, DocumentType, Folder, SearchSpace
 
 pytestmark = pytest.mark.integration
 
@@ -39,6 +39,7 @@ async def _add_document(
     title: str = "Doc",
     document_type: DocumentType = DocumentType.FILE,
     state: str = "ready",
+    folder_id: int | None = None,
     chunks: list[tuple[str, int, list[float]]],
 ) -> Document:
     """Persist one document and its chunks; ``chunks`` is (content, position, embedding)."""
@@ -48,6 +49,7 @@ async def _add_document(
         content="\n".join(content for content, _, _ in chunks),
         content_hash=uuid.uuid4().hex,
         search_space_id=search_space_id,
+        folder_id=folder_id,
         status={"state": state},
     )
     db_session.add(document)
@@ -162,6 +164,184 @@ async def test_document_ids_scope_pins_results(db_session, db_search_space):
     )
 
     assert {hit.document_id for hit in results} == {pinned.id}
+
+
+async def _add_folder(db_session, *, search_space_id: int, name: str, parent_id=None):
+    folder = Folder(
+        name=name,
+        position="a0",
+        search_space_id=search_space_id,
+        parent_id=parent_id,
+    )
+    db_session.add(folder)
+    await db_session.flush()
+    return folder
+
+
+async def test_folder_ids_scope_reaches_nested_subfolders(db_session, db_search_space):
+    """The uploaded-tree case: a folder upload mirrors its subdirectories.
+
+    Scoping to the picked root must find a file several levels down — an exact
+    ``folder_id`` match would see only the files sitting loose at the root, which
+    for a real document set reads as "nothing found" rather than as a bug.
+    """
+    root = await _add_folder(db_session, search_space_id=db_search_space.id, name="Root")
+    middle = await _add_folder(
+        db_session, search_space_id=db_search_space.id, name="Mid", parent_id=root.id
+    )
+    leaf = await _add_folder(
+        db_session, search_space_id=db_search_space.id, name="Leaf", parent_id=middle.id
+    )
+
+    deep = await _add_document(
+        db_session,
+        search_space_id=db_search_space.id,
+        folder_id=leaf.id,
+        chunks=[("asyncio buried three levels down.", 0, _axis(0))],
+    )
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query="asyncio",
+        scope=SearchScope(folder_ids=(root.id,)),
+        top_k=5,
+        query_embedding=_axis(0),
+    )
+
+    assert {hit.document_id for hit in results} == {deep.id}
+
+
+async def test_folder_ids_scope_excludes_unpicked_folders(db_session, db_search_space):
+    """Ask about two of three folders: the third one's documents must not answer."""
+    picked = [
+        await _add_folder(db_session, search_space_id=db_search_space.id, name=name)
+        for name in ("First", "Second")
+    ]
+    unpicked = await _add_folder(
+        db_session, search_space_id=db_search_space.id, name="Third"
+    )
+
+    wanted = [
+        await _add_document(
+            db_session,
+            search_space_id=db_search_space.id,
+            folder_id=folder.id,
+            chunks=[(f"asyncio in {folder.name}.", 0, _axis(index))],
+        )
+        for index, folder in enumerate(picked)
+    ]
+    excluded = await _add_document(
+        db_session,
+        search_space_id=db_search_space.id,
+        folder_id=unpicked.id,
+        chunks=[("asyncio in the folder nobody picked.", 0, _axis(0))],
+    )
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query="asyncio",
+        scope=SearchScope(folder_ids=tuple(folder.id for folder in picked)),
+        top_k=5,
+        query_embedding=_axis(0),
+    )
+
+    found = {hit.document_id for hit in results}
+    assert found == {document.id for document in wanted}
+    assert excluded.id not in found
+
+
+async def test_folder_scope_excludes_folderless_documents(db_session, db_search_space):
+    """A scoped question must not be answered from documents in no folder at all."""
+    folder = await _add_folder(
+        db_session, search_space_id=db_search_space.id, name="Only"
+    )
+    inside = await _add_document(
+        db_session,
+        search_space_id=db_search_space.id,
+        folder_id=folder.id,
+        chunks=[("asyncio inside the folder.", 0, _axis(0))],
+    )
+    loose = await _add_document(
+        db_session,
+        search_space_id=db_search_space.id,
+        chunks=[("asyncio in a folderless document.", 0, _axis(0))],
+    )
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query="asyncio",
+        scope=SearchScope(folder_ids=(folder.id,)),
+        top_k=5,
+        query_embedding=_axis(0),
+    )
+
+    found = {hit.document_id for hit in results}
+    assert inside.id in found and loose.id not in found
+
+
+async def test_folder_and_document_pins_union(db_session, db_search_space):
+    """Both pins answer the same question, so they widen rather than intersect."""
+    folder = await _add_folder(
+        db_session, search_space_id=db_search_space.id, name="Folder"
+    )
+    in_folder = await _add_document(
+        db_session,
+        search_space_id=db_search_space.id,
+        folder_id=folder.id,
+        chunks=[("asyncio inside the picked folder.", 0, _axis(0))],
+    )
+    pinned = await _add_document(
+        db_session,
+        search_space_id=db_search_space.id,
+        chunks=[("asyncio in a separately pinned document.", 0, _axis(1))],
+    )
+    await _add_document(
+        db_session,
+        search_space_id=db_search_space.id,
+        chunks=[("asyncio in a document nobody pointed at.", 0, _axis(2))],
+    )
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query="asyncio",
+        scope=SearchScope(folder_ids=(folder.id,), document_ids=(pinned.id,)),
+        top_k=5,
+        query_embedding=_axis(0),
+    )
+
+    assert {hit.document_id for hit in results} == {in_folder.id, pinned.id}
+
+
+async def test_folder_scope_keeps_search_space_boundary(db_session, db_search_space):
+    """A folder id from another space (no link) scopes to nothing, not to its documents."""
+    other_space = SearchSpace(name="Other Space", user_id=db_search_space.user_id)
+    db_session.add(other_space)
+    await db_session.flush()
+
+    foreign_folder = await _add_folder(
+        db_session, search_space_id=other_space.id, name="Foreign"
+    )
+    await _add_document(
+        db_session,
+        search_space_id=other_space.id,
+        folder_id=foreign_folder.id,
+        chunks=[("asyncio in another space's folder.", 0, _axis(0))],
+    )
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query="asyncio",
+        scope=SearchScope(folder_ids=(foreign_folder.id,)),
+        top_k=5,
+        query_embedding=_axis(0),
+    )
+
+    assert results == []
 
 
 async def test_deleting_documents_are_excluded(db_session, db_search_space):

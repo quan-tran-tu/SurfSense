@@ -84,6 +84,7 @@
   .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 2px 8px; }
   .ro { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .7; }
   .item .dead { color: var(--warn); font-size: 11px; flex: none; }
+  .item input[type=checkbox] { width: auto; flex: none; margin: 0; }
   .stack { display: flex; gap: 6px; }
   .stack input { min-width: 0; }
 
@@ -122,6 +123,13 @@
   footer { border-top: 1px solid var(--line); padding: 14px 24px 16px; background: var(--panel); }
   .composer { max-width: 760px; margin: 0 auto; }
   .composer .box { display: flex; gap: 8px; align-items: flex-end; }
+  /* Folder scope is easy to forget you left on, and it silently shrinks every
+     answer — so it sits above the input, not only in the sidebar. */
+  .scopebar {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px;
+    color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 4px 8px;
+  }
+  .scopebar .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #q { resize: none; max-height: 180px; }
   .opts {
     max-width: 760px; margin: 8px auto 0; display: flex; gap: 16px; align-items: center;
@@ -311,6 +319,10 @@
     <div id="msgs"></div>
     <footer>
       <div class="composer">
+        <div id="scopeBar" class="scopebar hide">
+          <span class="txt"></span>
+          <button id="scopeClear" class="sm" title="Search the whole space again.">✕</button>
+        </div>
         <div class="box">
           <textarea id="q" rows="1" placeholder="Ask your knowledge base…  (/help for commands · Enter to send, Shift+Enter for a newline)"></textarea>
           <button id="send" class="primary">Send</button>
@@ -387,6 +399,11 @@ const state = {
   relogged: false, busy: false,
   shares: [],       // [{path, token}] — the backend has no list endpoint, so we remember
   templates: [],    // [{id, name, outline, content}] — report format exemplars, browser-only
+  // Folder ids every question and report is confined to; [] = the whole space.
+  // Sent as mentioned_folder_ids (/new_chat) and folder_ids (/reports/generate),
+  // where the server matches each id's whole subtree.
+  scopeFolderIds: [],
+  scopeNames: {},   // folder id -> name, so the chip can be labelled without a refetch
 };
 
 const readPrefs = () => {
@@ -409,6 +426,9 @@ function savePrefs() {
       threadId: state.threadId,
       threadTitle: state.threadTitle,
       templates: state.templates,
+      // Folder ids belong to one user's space, so they live in the per-user slice.
+      scopeFolderIds: state.scopeFolderIds,
+      scopeNames: state.scopeNames,
     };
   }
   localStorage.setItem(LS, JSON.stringify({
@@ -428,6 +448,8 @@ function adoptUser(email) {
   state.threadId = mine.threadId ?? null;
   state.threadTitle = mine.threadTitle ?? "";
   state.templates = mine.templates ?? [];
+  state.scopeFolderIds = mine.scopeFolderIds ?? [];
+  state.scopeNames = mine.scopeNames ?? {};
 }
 
 function loadPrefs() {
@@ -731,6 +753,79 @@ async function docsIn(ids) {
   const page = await apiJson("GET",
     `/api/v1/documents?search_space_id=${state.spaceId}&document_types=LOCAL_FOLDER_FILE&page_size=-1`);
   return (page?.items ?? []).filter((d) => d.folder_id != null && ids.has(d.folder_id));
+}
+
+/* ------------------------------------------------------------ folder scope */
+//
+// "Is there anything about X in these two folders?" — the scope is a set of
+// folder ids the server confines retrieval to (its whole subtree per id, which
+// is what makes it work on an uploaded tree). It is deliberately sticky: an
+// investigation asks many questions of the same subset, so re-ticking boxes per
+// turn would be the annoying part. The chip above the composer is what keeps a
+// sticky scope from becoming an invisible one.
+
+// Live folder ids per panel, so a deleted folder can be dropped from the scope.
+// null = that panel hasn't rendered yet; pruning waits for both.
+let liveOwnFolderIds = null;
+let liveLinkedFolderIds = null;
+// In-scope folders another session owns. Retrieval hides those here whatever the
+// scope says, so a scope made of only them can never answer — say so rather than
+// let it read as "nothing found". They are not dropped: the scope is per user,
+// not per session, and reopening that session makes them count again.
+let unreachableScopeIds = new Set();
+
+const inScope = (id) => state.scopeFolderIds.includes(id);
+
+function setScope(ids, namesById = {}) {
+  const known = state.scopeNames;                // read before it is replaced
+  state.scopeFolderIds = [...new Set(ids)];
+  state.scopeNames = {};
+  for (const id of state.scopeFolderIds) {
+    const name = namesById[id] ?? known[id];
+    if (name) state.scopeNames[id] = name;
+  }
+  savePrefs();
+  renderScope();
+}
+
+function toggleScope(id, name, on) {
+  const ids = state.scopeFolderIds.filter((x) => x !== id);
+  const names = { ...state.scopeNames, [id]: name };
+  if (on) ids.push(id);
+  setScope(ids, names);
+}
+
+function clearScope() {
+  setScope([]);
+}
+
+/** Drop ids whose folder is gone, so a stale scope can't silently match nothing. */
+function pruneScope() {
+  if (!liveOwnFolderIds || !liveLinkedFolderIds) return;
+  const live = state.scopeFolderIds.filter(
+    (id) => liveOwnFolderIds.has(id) || liveLinkedFolderIds.has(id));
+  if (live.length !== state.scopeFolderIds.length) {
+    setScope(live, state.scopeNames);
+    toast("Dropped a deleted folder from the question scope.", "warn");
+  }
+}
+
+const scopeLabel = () =>
+  state.scopeFolderIds.map((id) => state.scopeNames[id] ?? `#${id}`).join(", ");
+
+/** The chip above the composer: what a question is currently confined to. */
+function renderScope() {
+  const bar = $("#scopeBar");
+  const n = state.scopeFolderIds.length;
+  bar.classList.toggle("hide", n === 0);
+  if (n) {
+    const stranded = state.scopeFolderIds.filter((id) => unreachableScopeIds.has(id));
+    bar.querySelector(".txt").textContent =
+      `asking only within ${n} folder${n === 1 ? "" : "s"}: ${scopeLabel()}` +
+      (stranded.length
+        ? ` — ${stranded.length} of them belongs to another session and answers nothing here`
+        : "");
+  }
 }
 
 const MAX_FILE_BYTES = 500 * 1024 * 1024;
@@ -1153,6 +1248,11 @@ async function ask(question, opts = {}) {
         // rules that used to be smuggled into user_query now live in the
         // backend's simple_rag system prompt.
         simple_rag: state.simpleRag,
+        // Folder scope. The server treats these as @-folder pins and confines
+        // retrieval to their subtrees, so "is there anything about X?" is
+        // answered from these folders alone — and "nothing found" then means
+        // nothing found *here*, which is the question being asked.
+        mentioned_folder_ids: state.scopeFolderIds.length ? state.scopeFolderIds : undefined,
       },
     });
 
@@ -1302,6 +1402,7 @@ async function runCommand(line) {
     case "/report":    return reportCommand(arg);
     case "/revise":    return reviseCommand(arg);
     case "/export":    return exportCommand(arg);
+    case "/scope":     return scopeCommand(arg);
     case "/reports":   return listReportsCommand();
     case "/templates": return listTemplatesCommand();
     case "/help":      return helpCommand();
@@ -1411,6 +1512,10 @@ async function reportCommand(request, parentId = null) {
         report_style: reportStyleFor(request),
         user_instructions: buildReportInstructions(request, tpl),
         parent_report_id: parentId,
+        // Same scope as a question. With it set the server refuses to write a
+        // report when those folders yield nothing, rather than filling the gap
+        // from the model's own memory.
+        folder_ids: state.scopeFolderIds.length ? state.scopeFolderIds : undefined,
       },
     });
 
@@ -1513,6 +1618,70 @@ function triggerDownload(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * Show or set the folder scope from the composer — the keyboard path to the same
+ * state the sidebar checkboxes hold.
+ *
+ *   /scope           list every folder, marking the ones questions are confined to
+ *   /scope 3,5       confine questions and reports to folders #3 and #5
+ *   /scope all       drop the scope and search the whole space again
+ */
+async function scopeCommand(arg) {
+  const [folders, links] = await Promise.all([watchedFolders(), listImports()]);
+  const candidates = [
+    ...(folders ?? []).map((f) => ({
+      id: f.id,
+      name: f.name,
+      // Hidden from retrieval in this session, so it could only scope to nothing.
+      other: f.owner_thread_id != null && f.owner_thread_id !== state.threadId,
+    })),
+    ...(links ?? []).map((l) => ({
+      id: l.source_folder_id, name: `${l.folder_name} (imported)`, other: false,
+    })),
+  ];
+  const want = arg.trim().toLowerCase();
+
+  if (["all", "none", "off", "clear"].includes(want)) {
+    clearScope();
+    addSystemNote("Scope cleared — questions and reports search the whole space again.");
+    return;
+  }
+
+  if (want) {
+    const ids = want.split(/[\s,]+/).filter(Boolean).map(Number);
+    // An id that names no folder would scope the search to nothing and read as
+    // "nothing found", so reject it here instead of answering from an empty set.
+    const bad = ids.filter((id) =>
+      !Number.isInteger(id) || !candidates.some((c) => c.id === id));
+    if (bad.length) {
+      toast(`No folder with id ${bad.join(", ")}. /scope lists what you have.`, "warn");
+      return;
+    }
+    const elsewhere = ids.filter((id) => candidates.find((c) => c.id === id)?.other);
+    if (elsewhere.length) {
+      toast(`Folder ${elsewhere.join(", ")} belongs to another session and can't ` +
+        "answer here. Promote it (⤴) first, or pick another.", "warn", 10000);
+      return;
+    }
+    setScope(ids, Object.fromEntries(candidates.map((c) => [c.id, c.name])));
+    await renderFolders();
+    await renderImports();
+  }
+
+  if (!candidates.length) {
+    addSystemNote("No folders indexed yet — nothing to scope to.");
+    return;
+  }
+  addSystemNote("Question scope:\n" +
+    candidates.map((c) =>
+      `  ${inScope(c.id) ? "[x]" : "[ ]"} #${c.id} — ${c.name}` +
+      (c.other ? "   (another session's — unusable here)" : "")).join("\n") +
+    (state.scopeFolderIds.length
+      ? `\n\nQuestions and reports use those ${state.scopeFolderIds.length} folder(s) only` +
+        " — everything below them included. /scope all clears it."
+      : "\n\nNothing selected: the whole space is searched. /scope <id,id> narrows it."));
+}
+
 async function listReportsCommand() {
   const rs = await threadReports();
   if (!rs.length) { addSystemNote("No reports in this session yet. Create one with /report <query>."); return; }
@@ -1545,9 +1714,17 @@ function helpCommand() {
     "  /export [id] <format>    download a report — pdf, docx, html, latex, epub, odt, plain, md",
     "  /reports                 list the reports in this session",
     "  /templates               list your uploaded report templates",
+    "  /scope [ids|all]         ask only inside chosen folders — /scope lists them,",
+    "                           /scope 3,5 narrows to two, /scope all clears it",
     "  /help                    show this",
     "",
     "Anything without a leading / is asked against your knowledge base.",
+    "",
+    "To check whether something appears in only some of your folders, tick those",
+    "folders in the Folders panel (or use /scope). Questions and reports are then",
+    "answered from those folders and everything under them — and \"nothing found\"",
+    "means nothing found there. The chip above the composer shows an active scope;",
+    "✕ on it searches everything again.",
     "",
     "Folders you upload are space-wide: every session can retrieve them. Tick",
     "\"this session only\" before adding one to keep it private to this session;",
@@ -1749,6 +1926,12 @@ async function promoteFolder(f) {
 async function renderFolders() {
   const box = $("#folders");
   const folders = await watchedFolders() ?? [];
+  liveOwnFolderIds = new Set(folders.map((f) => f.id));
+  unreachableScopeIds = new Set(folders
+    .filter((f) => f.owner_thread_id != null && f.owner_thread_id !== state.threadId)
+    .map((f) => f.id));
+  pruneScope();
+  renderScope();   // ownership changes with the open session, and so does the chip
   box.replaceChildren();
   if (!folders.length) { box.innerHTML = '<div class="empty">no folders indexed</div>'; return; }
 
@@ -1757,13 +1940,27 @@ async function renderFolders() {
     const mine = scoped && f.owner_thread_id === state.threadId;
     const row = document.createElement("div");
     row.className = "item";
-    row.innerHTML = `<span class="name"></span>
+    row.innerHTML = `<input type="checkbox" class="pick"
+        title="Tick to ask questions only inside this folder (and everything under it).">
+      <span class="name"></span>
       <span class="badge scope hide"></span>
       <button class="sm act hide" data-a="promote"
         title="Make this folder space-wide: every chat session will see it.">⤴</button>
       <button class="sm act" data-a="share">Share</button>
       <button class="sm act danger" data-a="rm">✕</button>`;
     row.querySelector(".name").textContent = f.name;
+    const pick = row.querySelector(".pick");
+    pick.checked = inScope(f.id);
+    // Another session's folder is hidden from retrieval here whatever the scope
+    // says, so offering it would only produce a scope that answers nothing.
+    if (scoped && !mine) {
+      pick.disabled = true;
+      pick.title = "Owned by another session — it can't answer questions here.";
+    }
+    pick.onclick = (e) => {
+      e.stopPropagation();                       // the row itself is not clickable, but be explicit
+      toggleScope(f.id, f.name, pick.checked);
+    };
     // A session-scoped folder answers only inside its own session; label whose
     // it is so two same-named rows are tellable apart.
     const badge = row.querySelector(".scope");
@@ -1793,16 +1990,28 @@ async function renderFolders() {
 async function renderImports() {
   const box = $("#imports");
   const links = await listImports() ?? [];
+  liveLinkedFolderIds = new Set(links.map((l) => l.source_folder_id));
+  pruneScope();
   box.replaceChildren();
   if (!links.length) { box.innerHTML = '<div class="empty">nothing imported</div>'; return; }
 
   for (const link of links) {
     const row = document.createElement("div");
     row.className = "item";
-    row.innerHTML = `<span class="name"></span>
+    row.innerHTML = `<input type="checkbox" class="pick"
+        title="Tick to ask questions only inside this imported folder.">
+      <span class="name"></span>
       <span class="dead hide" title="The owner revoked or expired this share, so it no longer answers questions.">revoked</span>
       <button class="sm act danger" data-a="rm">✕</button>`;
     row.querySelector(".name").textContent = link.folder_name;
+    // An imported folder lives in the sharer's space; the scope predicate matches
+    // on folder id, so it works here exactly as an own folder does.
+    const pick = row.querySelector(".pick");
+    pick.checked = inScope(link.source_folder_id);
+    pick.onclick = (e) => {
+      e.stopPropagation();
+      toggleScope(link.source_folder_id, link.folder_name, pick.checked);
+    };
     // A revoked share leaves the link in place but stops resolving: say so rather
     // than let it look searchable.
     row.querySelector(".dead").classList.toggle("hide", link.live !== false);
@@ -1840,6 +2049,9 @@ function renderShares() {
 function renderContext() {
   $("#ctx").textContent = `space #${state.spaceId} · thread #${state.threadId}`;
   $("#whoami").textContent = `${state.email}\ncli:${state.email}`;
+  // A scope survives a reload (it lives in the per-user prefs), so paint the chip
+  // whenever the shell is refreshed — not only when the scope changes.
+  renderScope();
 }
 
 /* ------------------------------------------------------------------- admin */
@@ -2174,6 +2386,12 @@ function init() {
   $("#importToken").addEventListener("keydown", (e) => e.key === "Enter" && $("#importBtn").click());
 
   $("#simpleRag").onchange = (e) => { state.simpleRag = e.target.checked; savePrefs(); };
+
+  $("#scopeClear").onclick = () => guard(async () => {
+    clearScope();
+    await renderFolders();
+    await renderImports();
+  });
 
   // Citation chips are re-created on every repaint of a streaming answer, so the
   // listener lives on the container instead of the chips.

@@ -43,7 +43,6 @@ from app.agents.chat.multi_agent_chat.shared.retrieval import (
     SearchScope,
     search_knowledge_base_context,
 )
-from app.agents.chat.runtime.references import referenced_document_ids
 from app.agents.chat.shared.search_query import build_search_terms
 from app.db import shielded_async_session
 from app.tasks.chat.streaming.helpers.chunk_parts import extract_chunk_parts
@@ -72,19 +71,20 @@ async def _retrieve(
     """
     from app.services.reranker_service import RerankerService
 
+    # Folder pins scope the search to those folders' subtrees; document pins name
+    # documents. Both empty means the whole knowledge base.
+    scope = SearchScope(
+        document_ids=tuple(mentioned_document_ids) if mentioned_document_ids else None,
+        folder_ids=tuple(mentioned_folder_ids) if mentioned_folder_ids else None,
+    )
+
     async with shielded_async_session() as session:
-        document_ids = await referenced_document_ids(
-            session,
-            search_space_id=search_space_id,
-            document_ids=mentioned_document_ids,
-            folder_ids=mentioned_folder_ids,
-        )
         return await search_knowledge_base_context(
             session,
             search_space_id=search_space_id,
             query=question,
             registry=registry,
-            scope=SearchScope(document_ids=document_ids or None),
+            scope=scope,
             # No-ops when nothing is configured (``rerank_hits`` short-circuits
             # on None), but with a single non-iterative retrieval, rank quality
             # is doing all the work — so use one when it is available.

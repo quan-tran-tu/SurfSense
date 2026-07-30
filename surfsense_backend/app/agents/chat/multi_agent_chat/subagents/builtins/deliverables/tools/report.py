@@ -594,6 +594,7 @@ async def generate_report_document(
     parent_report_id: int | None = None,
     available_connectors: list[str] | None = None,
     available_document_types: list[str] | None = None,
+    folder_ids: list[int] | None = None,
     allow_kb_search: bool = True,
     emit_progress: Callable[[str, dict[str, Any]], None] = _noop_progress,
 ) -> dict[str, Any]:
@@ -613,6 +614,10 @@ async def generate_report_document(
             callers pass ``resolve_root_thread_id(runtime, ...)``.
         allow_kb_search: Gate on the internal KB search, mirroring the tool's
             historical ``connector_service`` check.
+        folder_ids: Confine the KB search to these folders (and everything below
+            them). ``None`` searches the whole knowledge base. Readability is
+            still enforced by the search itself, so an unreachable folder id
+            narrows the result to nothing rather than leaking another space.
         emit_progress: Called as ``(event_name, payload)`` at each phase.
             Defaults to a no-op for non-graph callers.
     """
@@ -747,7 +752,11 @@ async def generate_report_document(
                 scope = SearchScope(
                     document_types=_report_search_types(
                         available_connectors, available_document_types
-                    )
+                    ),
+                    # Confines every query to the caller's chosen folders (their
+                    # subtrees), so a report can be written strictly from a subset
+                    # of what is indexed. ``None`` = the whole knowledge base.
+                    folder_ids=tuple(folder_ids) if folder_ids else None,
                 )
                 reranker = RerankerService.get_reranker_instance()
 
@@ -834,6 +843,33 @@ async def generate_report_document(
             logger.warning(
                 "[generate_report] KB search requested but no search_queries "
                 "provided. Using source_content as-is."
+            )
+
+        # A folder-scoped report is written from those folders or not at all.
+        # Otherwise an empty scoped search falls straight through to a report
+        # generated from the model's own memory, which reads exactly like a
+        # grounded one — the failure mode the scope was chosen to prevent. A
+        # revision is exempt: it still has its parent's content to work on.
+        if (
+            folder_ids
+            and needs_kb_search
+            and not effective_source.strip()
+            and parent_report_content is None
+        ):
+            error_msg = (
+                "Nothing in the selected folders matched this request, so no "
+                "report was written. Widen the folder selection, or ask the "
+                "question without scoping it."
+            )
+            report_id = await _save_failed_report(error_msg)
+            return _failed(
+                {
+                    "status": "failed",
+                    "error": error_msg,
+                    "report_id": report_id,
+                    "title": topic,
+                },
+                error=error_msg,
             )
 
         capped_source = effective_source[:100000]

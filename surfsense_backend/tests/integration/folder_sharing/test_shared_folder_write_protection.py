@@ -347,3 +347,43 @@ async def test_documents_query_spans_owned_and_linked(db_session, shared_setup):
 
     assert own_doc.id in visible
     assert shared_setup["doc"].id in visible, "linked document not readable"
+
+
+@pytest.mark.asyncio
+async def test_folder_scoped_search_reaches_a_linked_folder(db_session, shared_setup):
+    """An imported folder can be a question's scope, like an owned one.
+
+    The scope predicate matches on folder id and deliberately does not filter by
+    space — readability is a separate condition — because a linked folder belongs
+    to the *sharer's* space. Filtering there would scope every imported folder to
+    nothing, and report it as "nothing found".
+    """
+    from app.agents.chat.multi_agent_chat.shared.retrieval.hybrid_search import (
+        search_chunks,
+    )
+    from app.agents.chat.multi_agent_chat.shared.retrieval.models import SearchScope
+    from app.config import config
+    from app.db import Chunk
+
+    embedding = [0.0] * config.embedding_model_instance.dimension
+    embedding[0] = 1.0
+    db_session.add(
+        Chunk(
+            content="The asyncio library, inside the shared folder.",
+            document_id=shared_setup["doc"].id,
+            position=0,
+            embedding=embedding,
+        )
+    )
+    await db_session.flush()
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=shared_setup["importer_id"],
+        query="asyncio",
+        scope=SearchScope(folder_ids=(shared_setup["folder"].id,)),
+        top_k=5,
+        query_embedding=embedding,
+    )
+
+    assert [hit.document_id for hit in results] == [shared_setup["doc"].id]

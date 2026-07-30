@@ -14,10 +14,19 @@ from typing import Any
 
 @dataclass(frozen=True)
 class SearchScope:
-    """Filters narrowing a search; ``None``/empty means "whole knowledge base"."""
+    """Filters narrowing a search; ``None``/empty means "whole knowledge base".
+
+    ``document_ids`` and ``folder_ids`` both answer "which documents may match",
+    so they combine as a **union**: a search scoped to two folders plus one pinned
+    document sees all three. Every other field intersects.
+
+    ``folder_ids`` names folder *roots* — matching is over each root's whole
+    subtree, because an uploaded folder is a tree of ``Folder`` rows.
+    """
 
     document_types: tuple[str, ...] | None = None
     document_ids: tuple[int, ...] | None = None
+    folder_ids: tuple[int, ...] | None = None
     start_date: datetime | None = None
     end_date: datetime | None = None
 
