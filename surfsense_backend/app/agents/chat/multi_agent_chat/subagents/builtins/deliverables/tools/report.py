@@ -1,9 +1,26 @@
-"""Factory for inline Markdown reports: optional KB sourcing, section-aware revision, short-lived DB sessions."""
+"""Markdown report generation: optional KB sourcing, section-aware revision, short-lived DB sessions.
+
+Two entry points over one pipeline:
+
+* :func:`generate_report_document` — the pipeline itself, a plain async
+  function. It searches, writes, parses and persists on its own; nothing about
+  it needs an agent. Callable from a route.
+* :func:`create_generate_report_tool` — the LangGraph tool wrapper. Adds only
+  the things the graph needs: ``runtime.tool_call_id`` for the ``Command``
+  return, ``resolve_root_thread_id`` for thread attribution, and
+  ``report_progress`` custom events.
+
+The split exists because the agent's entire contribution to a report was
+choosing six argument values. A caller that already knows them (a ``/report``
+command, say) has no reason to pay for two delegation hops to have a model
+guess them back.
+"""
 
 import asyncio
 import json
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
 from langchain.tools import ToolRuntime
@@ -558,6 +575,427 @@ async def _revise_with_sections(
 
 # ─── Tool Factory ───────────────────────────────────────────────────────────
 
+def _noop_progress(name: str, data: dict[str, Any]) -> None:
+    """Progress sink for callers outside a LangGraph run."""
+
+
+async def generate_report_document(
+    *,
+    topic: str,
+    search_space_id: int,
+    thread_id: int | None = None,
+    source_content: str = "",
+    source_strategy: str = "provided",
+    search_queries: list[str] | None = None,
+    report_style: str = "detailed",
+    user_instructions: str | None = None,
+    parent_report_id: int | None = None,
+    available_connectors: list[str] | None = None,
+    available_document_types: list[str] | None = None,
+    allow_kb_search: bool = True,
+    emit_progress: Callable[[str, dict[str, Any]], None] = _noop_progress,
+) -> dict[str, Any]:
+    """Search, write and persist one report. Returns the result payload.
+
+    The whole pipeline: optional multi-query KB search, single-shot generation
+    (or section-aware revision when ``parent_report_id`` is set), fence
+    stripping, metadata extraction, and the ``Report`` row write. Every DB
+    session is short-lived so no connection is held across the LLM call.
+
+    Never raises for expected failures — on error it persists a failed report
+    row and returns ``{"status": "failed", "error": ..., "report_id": ...}``,
+    so both callers can report the same way.
+
+    Args:
+        thread_id: Chat to attribute the report to, already resolved. Tool
+            callers pass ``resolve_root_thread_id(runtime, ...)``.
+        allow_kb_search: Gate on the internal KB search, mirroring the tool's
+            historical ``connector_service`` check.
+        emit_progress: Called as ``(event_name, payload)`` at each phase.
+            Defaults to a no-op for non-graph callers.
+    """
+    # Shared with the _save_failed_report closure.
+    parent_report_content: str | None = None
+    report_group_id: int | None = None
+
+    def _failed(payload: dict[str, Any], *, error: str) -> dict[str, Any]:
+        payload["error"] = error
+        return payload
+
+    async def _save_failed_report(error_msg: str) -> int | None:
+        """Persist a failed report row using a short-lived session."""
+        try:
+            async with shielded_async_session() as session:
+                failed_report = Report(
+                    title=topic,
+                    content=None,
+                    report_metadata={
+                        "status": "failed",
+                        "error_message": error_msg,
+                    },
+                    report_style=report_style,
+                    search_space_id=search_space_id,
+                    thread_id=thread_id,
+                    report_group_id=report_group_id,
+                )
+                session.add(failed_report)
+                await session.commit()
+                await session.refresh(failed_report)
+                # New group (v1 failed): point the group at itself.
+                if not failed_report.report_group_id:
+                    failed_report.report_group_id = failed_report.id
+                    await session.commit()
+                logger.info(
+                    f"[generate_report] Saved failed report {failed_report.id}: {error_msg}"
+                )
+                return failed_report.id
+        except Exception:
+            logger.exception(
+                "[generate_report] Could not persist failed report row"
+            )
+            return None
+
+    try:
+        # ── Phase 1: READ (short-lived session) ──────────────────────
+        # Fetch parent report + LLM config, then release the connection
+        # before the long LLM call.
+        async with shielded_async_session() as read_session:
+            if parent_report_id:
+                parent_report = await read_session.get(Report, parent_report_id)
+                if parent_report:
+                    report_group_id = parent_report.report_group_id
+                    parent_report_content = parent_report.content
+                    logger.info(
+                        f"[generate_report] Creating new version from parent {parent_report_id} "
+                        f"(group {report_group_id})"
+                    )
+                else:
+                    logger.warning(
+                        f"[generate_report] parent_report_id={parent_report_id} not found, "
+                        "creating standalone report"
+                    )
+
+            llm = await get_agent_llm(read_session, search_space_id)
+
+        if not llm:
+            error_msg = (
+                "No LLM configured. Please configure a language model in Settings."
+            )
+            report_id = await _save_failed_report(error_msg)
+            return _failed(
+                {
+                    "status": "failed",
+                    "error": error_msg,
+                    "report_id": report_id,
+                    "title": topic,
+                },
+                error=error_msg,
+            )
+
+        user_instructions_section = ""
+        if user_instructions:
+            user_instructions_section = (
+                f"**Hướng dẫn bổ sung:** {user_instructions}"
+            )
+
+        # ── Phase 1b: SOURCE COLLECTION (smart KB search) ────────────
+        # Decide whether to augment source_content with KB search results.
+        effective_source = source_content or ""
+
+        strategy = (source_strategy or "provided").lower().strip()
+
+        needs_kb_search = False
+        if strategy == "kb_search":
+            needs_kb_search = True
+        elif strategy == "auto":
+            # Heuristic: if source_content has fewer than 200 words,
+            # it's likely insufficient — augment with KB search.
+            word_count_estimate = len(effective_source.split())
+            if word_count_estimate < 200:
+                needs_kb_search = True
+                logger.info(
+                    f"[generate_report] auto strategy: source has ~{word_count_estimate} words, "
+                    "triggering KB search"
+                )
+        # "provided" and "conversation" → use source_content as-is
+
+        if needs_kb_search and allow_kb_search and search_queries:
+            query_count = min(len(search_queries), 5)
+            emit_progress(
+                "report_progress",
+                {
+                    "phase": "kb_search",
+                    "message": f"Searching knowledge base ({query_count} queries)...",
+                },
+            )
+            logger.info(
+                f"[generate_report] Running internal KB search with "
+                f"{query_count} queries: {search_queries[:5]}"
+            )
+            try:
+                from app.agents.chat.multi_agent_chat.shared.retrieval.hybrid_search import (
+                    search_chunks,
+                )
+                from app.agents.chat.multi_agent_chat.shared.retrieval.models import (
+                    DocumentHit,
+                    SearchScope,
+                )
+
+                scope = SearchScope(
+                    document_types=_report_search_types(
+                        available_connectors, available_document_types
+                    )
+                )
+
+                # Each query gets its own short-lived session.
+                async def _run_single_query(q: str) -> list[DocumentHit]:
+                    async with shielded_async_session() as kb_session:
+                        return await search_chunks(
+                            kb_session,
+                            search_space_id=search_space_id,
+                            query=q,
+                            scope=scope,
+                            top_k=10,
+                        )
+
+                hits_per_query = await asyncio.gather(
+                    *[_run_single_query(q) for q in search_queries[:5]]
+                )
+
+                seen_doc_ids: set[int] = set()
+                merged_hits: list[DocumentHit] = []
+                for hits in hits_per_query:
+                    for hit in hits:
+                        if hit.document_id in seen_doc_ids:
+                            continue
+                        seen_doc_ids.add(hit.document_id)
+                        merged_hits.append(hit)
+
+                kb_combined = _render_kb_hits_for_report(merged_hits)
+                if kb_combined.strip():
+                    if effective_source.strip():
+                        effective_source = (
+                            effective_source
+                            + "\n\n--- Kết quả tìm kiếm trong kho tri thức ---\n\n"
+                            + kb_combined
+                        )
+                    else:
+                        effective_source = kb_combined
+
+                    doc_count = len(merged_hits)
+                    emit_progress(
+                        "report_progress",
+                        {
+                            "phase": "kb_search_done",
+                            "message": f"Found {doc_count} relevant documents",
+                        },
+                    )
+                    logger.info(
+                        f"[generate_report] KB search added ~{len(kb_combined)} chars "
+                        f"from {doc_count} documents"
+                    )
+                else:
+                    emit_progress(
+                        "report_progress",
+                        {
+                            "phase": "kb_search_done",
+                            "message": "No results found in knowledge base",
+                        },
+                    )
+                    logger.info("[generate_report] KB search returned no results")
+
+            except Exception as e:
+                logger.warning(
+                    f"[generate_report] Internal KB search failed: {e}. "
+                    "Proceeding with existing source_content."
+                )
+        elif needs_kb_search and not allow_kb_search:
+            logger.warning(
+                "[generate_report] KB search requested but KB search is disabled "
+                "not available. Using source_content as-is."
+            )
+        elif needs_kb_search and not search_queries:
+            logger.warning(
+                "[generate_report] KB search requested but no search_queries "
+                "provided. Using source_content as-is."
+            )
+
+        capped_source = effective_source[:100000]
+
+        # Length constraint only when the user explicitly asked for brevity.
+        length_instruction = ""
+        if report_style == "brief":
+            length_instruction = (
+                "**GIỚI HẠN ĐỘ DÀI (BẮT BUỘC):** Người dùng muốn một báo cáo NGẮN. "
+                "Viết cô đọng — khoảng 400 từ (~1 trang), trừ khi Hướng dẫn bổ sung "
+                "ở trên yêu cầu độ dài khác. Ưu tiên ngắn gọn hơn là đầy đủ. "
+                "KHÔNG viết báo cáo dài."
+            )
+
+        # ── Phase 2: LLM GENERATION (no DB connection held) ──────────
+
+        report_content: str | None = None
+
+        if parent_report_content:
+            # Revision mode: section-level first (preserves untouched
+            # sections), falling back to full-doc revision.
+            emit_progress(
+                "report_progress",
+                {
+                    "phase": "revision_start",
+                    "message": "Analyzing sections to modify...",
+                },
+            )
+            logger.info(
+                "[generate_report] Revision mode — attempting section-level revision"
+            )
+            report_content = await _revise_with_sections(
+                llm=llm,
+                parent_content=parent_report_content,
+                user_instructions=user_instructions
+                or "Cải thiện và trau chuốt báo cáo.",
+                source_content=capped_source,
+                topic=topic,
+                report_style=report_style,
+            )
+
+            if report_content is None:
+                emit_progress(
+                    "report_progress",
+                    {"phase": "writing", "message": "Rewriting your full report"},
+                )
+                logger.info(
+                    "[generate_report] Section-level revision deferred, "
+                    "using full-document revision"
+                )
+                prompt = _REVISION_PROMPT.format(
+                    topic=topic,
+                    report_style=report_style,
+                    user_instructions_section=user_instructions_section
+                    or "Cải thiện và trau chuốt báo cáo.",
+                    source_content=capped_source,
+                    previous_report_content=parent_report_content,
+                    length_instruction=length_instruction,
+                    formatting_rules=_FORMATTING_RULES,
+                )
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
+                report_content = response.content
+
+        else:
+            # New report: single-shot generation (one LLM call).
+            emit_progress(
+                "report_progress",
+                {"phase": "writing", "message": "Writing your report"},
+            )
+            logger.info(
+                "[generate_report] New report — using single-shot generation"
+            )
+            prompt = _REPORT_PROMPT.format(
+                topic=topic,
+                report_style=report_style,
+                user_instructions_section=user_instructions_section,
+                previous_version_section="",
+                source_content=capped_source,
+                length_instruction=length_instruction,
+                formatting_rules=_FORMATTING_RULES,
+            )
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            report_content = response.content
+
+        if not report_content or not isinstance(report_content, str):
+            error_msg = "LLM returned empty or invalid content"
+            report_id = await _save_failed_report(error_msg)
+            return _failed(
+                {
+                    "status": "failed",
+                    "error": error_msg,
+                    "report_id": report_id,
+                    "title": topic,
+                },
+                error=error_msg,
+            )
+
+        # LLMs often wrap output in ```markdown ... ``` fences — strip them
+        report_content = _strip_wrapping_code_fences(report_content)
+
+        if not report_content:
+            error_msg = "LLM returned empty or invalid content"
+            report_id = await _save_failed_report(error_msg)
+            return _failed(
+                {
+                    "status": "failed",
+                    "error": error_msg,
+                    "report_id": report_id,
+                    "title": topic,
+                },
+                error=error_msg,
+            )
+
+        # Strip the branding footer, including any carried over from a parent
+        # version. It is intentionally NOT re-appended — reports ship without it.
+        while report_content.rstrip().endswith(_REPORT_FOOTER):
+            idx = report_content.rstrip().rfind(_REPORT_FOOTER)
+            report_content = report_content[:idx].rstrip()
+            if report_content.rstrip().endswith("---"):
+                report_content = report_content.rstrip()[:-3].rstrip()
+
+        metadata = _extract_metadata(report_content)
+
+        # ── Phase 3: WRITE (short-lived session) ─────────────────────
+        async with shielded_async_session() as write_session:
+            report = Report(
+                title=topic,
+                content=report_content,
+                report_metadata=metadata,
+                report_style=report_style,
+                search_space_id=search_space_id,
+                thread_id=thread_id,
+                report_group_id=report_group_id,
+            )
+            write_session.add(report)
+            await write_session.commit()
+            await write_session.refresh(report)
+
+            # Brand-new report (v1): point the group at itself.
+            if not report.report_group_id:
+                report.report_group_id = report.id
+                await write_session.commit()
+
+            saved_report_id = report.id
+            saved_group_id = report.report_group_id
+
+        logger.info(
+            f"[generate_report] Created report {saved_report_id} "
+            f"(group={saved_group_id}): "
+            f"{metadata.get('word_count', 0)} words, "
+            f"{metadata.get('section_count', 0)} sections"
+        )
+
+        payload: dict[str, Any] = {
+            "status": "ready",
+            "report_id": saved_report_id,
+            "title": topic,
+            "word_count": metadata.get("word_count", 0),
+            "is_revision": bool(parent_report_content),
+            "report_markdown": report_content,
+            "message": f"Report generated successfully: {topic}",
+        }
+        return payload
+
+    except Exception as e:
+        error_message = str(e)
+        logger.exception(f"[generate_report] Error: {error_message}")
+        report_id = await _save_failed_report(error_message)
+        return _failed(
+            {
+                "status": "failed",
+                "error": error_message,
+                "report_id": report_id,
+                "title": topic,
+            },
+            error=error_message,
+        )
+
 
 def create_generate_report_tool(
     search_space_id: int,
@@ -694,411 +1132,36 @@ def create_generate_report_tool(
         Returns:
             Dict with status, report_id, title, word_count, and message.
         """
-        # Shared with the _save_failed_report closure.
-        parent_report_content: str | None = None
-        report_group_id: int | None = None
+        payload = await generate_report_document(
+            topic=topic,
+            search_space_id=search_space_id,
+            thread_id=resolve_root_thread_id(runtime, thread_id),
+            source_content=source_content,
+            source_strategy=source_strategy,
+            search_queries=search_queries,
+            report_style=report_style,
+            user_instructions=user_instructions,
+            parent_report_id=parent_report_id,
+            available_connectors=available_connectors,
+            available_document_types=available_document_types,
+            allow_kb_search=connector_service is not None,
+            emit_progress=dispatch_custom_event,
+        )
 
-        def _failed(payload: dict[str, Any], *, error: str) -> Command:
-            return with_receipt(
-                payload=payload,
-                receipt=make_receipt(
-                    route="deliverables",
-                    type="report",
-                    operation="generate",
-                    status="failed",
-                    external_id=str(payload.get("report_id"))
-                    if payload.get("report_id") is not None
-                    else None,
-                    preview=topic,
-                    error=error,
-                ),
-                tool_call_id=runtime.tool_call_id,
-            )
-
-        async def _save_failed_report(error_msg: str) -> int | None:
-            """Persist a failed report row using a short-lived session."""
-            try:
-                async with shielded_async_session() as session:
-                    failed_report = Report(
-                        title=topic,
-                        content=None,
-                        report_metadata={
-                            "status": "failed",
-                            "error_message": error_msg,
-                        },
-                        report_style=report_style,
-                        search_space_id=search_space_id,
-                        thread_id=resolve_root_thread_id(runtime, thread_id),
-                        report_group_id=report_group_id,
-                    )
-                    session.add(failed_report)
-                    await session.commit()
-                    await session.refresh(failed_report)
-                    # New group (v1 failed): point the group at itself.
-                    if not failed_report.report_group_id:
-                        failed_report.report_group_id = failed_report.id
-                        await session.commit()
-                    logger.info(
-                        f"[generate_report] Saved failed report {failed_report.id}: {error_msg}"
-                    )
-                    return failed_report.id
-            except Exception:
-                logger.exception(
-                    "[generate_report] Could not persist failed report row"
-                )
-                return None
-
-        try:
-            # ── Phase 1: READ (short-lived session) ──────────────────────
-            # Fetch parent report + LLM config, then release the connection
-            # before the long LLM call.
-            async with shielded_async_session() as read_session:
-                if parent_report_id:
-                    parent_report = await read_session.get(Report, parent_report_id)
-                    if parent_report:
-                        report_group_id = parent_report.report_group_id
-                        parent_report_content = parent_report.content
-                        logger.info(
-                            f"[generate_report] Creating new version from parent {parent_report_id} "
-                            f"(group {report_group_id})"
-                        )
-                    else:
-                        logger.warning(
-                            f"[generate_report] parent_report_id={parent_report_id} not found, "
-                            "creating standalone report"
-                        )
-
-                llm = await get_agent_llm(read_session, search_space_id)
-
-            if not llm:
-                error_msg = (
-                    "No LLM configured. Please configure a language model in Settings."
-                )
-                report_id = await _save_failed_report(error_msg)
-                return _failed(
-                    {
-                        "status": "failed",
-                        "error": error_msg,
-                        "report_id": report_id,
-                        "title": topic,
-                    },
-                    error=error_msg,
-                )
-
-            user_instructions_section = ""
-            if user_instructions:
-                user_instructions_section = (
-                    f"**Hướng dẫn bổ sung:** {user_instructions}"
-                )
-
-            # ── Phase 1b: SOURCE COLLECTION (smart KB search) ────────────
-            # Decide whether to augment source_content with KB search results.
-            effective_source = source_content or ""
-
-            strategy = (source_strategy or "provided").lower().strip()
-
-            needs_kb_search = False
-            if strategy == "kb_search":
-                needs_kb_search = True
-            elif strategy == "auto":
-                # Heuristic: if source_content has fewer than 200 words,
-                # it's likely insufficient — augment with KB search.
-                word_count_estimate = len(effective_source.split())
-                if word_count_estimate < 200:
-                    needs_kb_search = True
-                    logger.info(
-                        f"[generate_report] auto strategy: source has ~{word_count_estimate} words, "
-                        "triggering KB search"
-                    )
-            # "provided" and "conversation" → use source_content as-is
-
-            if needs_kb_search and connector_service and search_queries:
-                query_count = min(len(search_queries), 5)
-                dispatch_custom_event(
-                    "report_progress",
-                    {
-                        "phase": "kb_search",
-                        "message": f"Searching knowledge base ({query_count} queries)...",
-                    },
-                )
-                logger.info(
-                    f"[generate_report] Running internal KB search with "
-                    f"{query_count} queries: {search_queries[:5]}"
-                )
-                try:
-                    from app.agents.chat.multi_agent_chat.shared.retrieval.hybrid_search import (
-                        search_chunks,
-                    )
-                    from app.agents.chat.multi_agent_chat.shared.retrieval.models import (
-                        DocumentHit,
-                        SearchScope,
-                    )
-
-                    scope = SearchScope(
-                        document_types=_report_search_types(
-                            available_connectors, available_document_types
-                        )
-                    )
-
-                    # Each query gets its own short-lived session.
-                    async def _run_single_query(q: str) -> list[DocumentHit]:
-                        async with shielded_async_session() as kb_session:
-                            return await search_chunks(
-                                kb_session,
-                                search_space_id=search_space_id,
-                                query=q,
-                                scope=scope,
-                                top_k=10,
-                            )
-
-                    hits_per_query = await asyncio.gather(
-                        *[_run_single_query(q) for q in search_queries[:5]]
-                    )
-
-                    seen_doc_ids: set[int] = set()
-                    merged_hits: list[DocumentHit] = []
-                    for hits in hits_per_query:
-                        for hit in hits:
-                            if hit.document_id in seen_doc_ids:
-                                continue
-                            seen_doc_ids.add(hit.document_id)
-                            merged_hits.append(hit)
-
-                    kb_combined = _render_kb_hits_for_report(merged_hits)
-                    if kb_combined.strip():
-                        if effective_source.strip():
-                            effective_source = (
-                                effective_source
-                                + "\n\n--- Kết quả tìm kiếm trong kho tri thức ---\n\n"
-                                + kb_combined
-                            )
-                        else:
-                            effective_source = kb_combined
-
-                        doc_count = len(merged_hits)
-                        dispatch_custom_event(
-                            "report_progress",
-                            {
-                                "phase": "kb_search_done",
-                                "message": f"Found {doc_count} relevant documents",
-                            },
-                        )
-                        logger.info(
-                            f"[generate_report] KB search added ~{len(kb_combined)} chars "
-                            f"from {doc_count} documents"
-                        )
-                    else:
-                        dispatch_custom_event(
-                            "report_progress",
-                            {
-                                "phase": "kb_search_done",
-                                "message": "No results found in knowledge base",
-                            },
-                        )
-                        logger.info("[generate_report] KB search returned no results")
-
-                except Exception as e:
-                    logger.warning(
-                        f"[generate_report] Internal KB search failed: {e}. "
-                        "Proceeding with existing source_content."
-                    )
-            elif needs_kb_search and not connector_service:
-                logger.warning(
-                    "[generate_report] KB search requested but connector_service "
-                    "not available. Using source_content as-is."
-                )
-            elif needs_kb_search and not search_queries:
-                logger.warning(
-                    "[generate_report] KB search requested but no search_queries "
-                    "provided. Using source_content as-is."
-                )
-
-            capped_source = effective_source[:100000]
-
-            # Length constraint only when the user explicitly asked for brevity.
-            length_instruction = ""
-            if report_style == "brief":
-                length_instruction = (
-                    "**GIỚI HẠN ĐỘ DÀI (BẮT BUỘC):** Người dùng muốn một báo cáo NGẮN. "
-                    "Viết cô đọng — khoảng 400 từ (~1 trang), trừ khi Hướng dẫn bổ sung "
-                    "ở trên yêu cầu độ dài khác. Ưu tiên ngắn gọn hơn là đầy đủ. "
-                    "KHÔNG viết báo cáo dài."
-                )
-
-            # ── Phase 2: LLM GENERATION (no DB connection held) ──────────
-
-            report_content: str | None = None
-
-            if parent_report_content:
-                # Revision mode: section-level first (preserves untouched
-                # sections), falling back to full-doc revision.
-                dispatch_custom_event(
-                    "report_progress",
-                    {
-                        "phase": "revision_start",
-                        "message": "Analyzing sections to modify...",
-                    },
-                )
-                logger.info(
-                    "[generate_report] Revision mode — attempting section-level revision"
-                )
-                report_content = await _revise_with_sections(
-                    llm=llm,
-                    parent_content=parent_report_content,
-                    user_instructions=user_instructions
-                    or "Cải thiện và trau chuốt báo cáo.",
-                    source_content=capped_source,
-                    topic=topic,
-                    report_style=report_style,
-                )
-
-                if report_content is None:
-                    dispatch_custom_event(
-                        "report_progress",
-                        {"phase": "writing", "message": "Rewriting your full report"},
-                    )
-                    logger.info(
-                        "[generate_report] Section-level revision deferred, "
-                        "using full-document revision"
-                    )
-                    prompt = _REVISION_PROMPT.format(
-                        topic=topic,
-                        report_style=report_style,
-                        user_instructions_section=user_instructions_section
-                        or "Cải thiện và trau chuốt báo cáo.",
-                        source_content=capped_source,
-                        previous_report_content=parent_report_content,
-                        length_instruction=length_instruction,
-                        formatting_rules=_FORMATTING_RULES,
-                    )
-                    response = await llm.ainvoke([HumanMessage(content=prompt)])
-                    report_content = response.content
-
-            else:
-                # New report: single-shot generation (one LLM call).
-                dispatch_custom_event(
-                    "report_progress",
-                    {"phase": "writing", "message": "Writing your report"},
-                )
-                logger.info(
-                    "[generate_report] New report — using single-shot generation"
-                )
-                prompt = _REPORT_PROMPT.format(
-                    topic=topic,
-                    report_style=report_style,
-                    user_instructions_section=user_instructions_section,
-                    previous_version_section="",
-                    source_content=capped_source,
-                    length_instruction=length_instruction,
-                    formatting_rules=_FORMATTING_RULES,
-                )
-                response = await llm.ainvoke([HumanMessage(content=prompt)])
-                report_content = response.content
-
-            if not report_content or not isinstance(report_content, str):
-                error_msg = "LLM returned empty or invalid content"
-                report_id = await _save_failed_report(error_msg)
-                return _failed(
-                    {
-                        "status": "failed",
-                        "error": error_msg,
-                        "report_id": report_id,
-                        "title": topic,
-                    },
-                    error=error_msg,
-                )
-
-            # LLMs often wrap output in ```markdown ... ``` fences — strip them
-            report_content = _strip_wrapping_code_fences(report_content)
-
-            if not report_content:
-                error_msg = "LLM returned empty or invalid content"
-                report_id = await _save_failed_report(error_msg)
-                return _failed(
-                    {
-                        "status": "failed",
-                        "error": error_msg,
-                        "report_id": report_id,
-                        "title": topic,
-                    },
-                    error=error_msg,
-                )
-
-            # Strip the branding footer, including any carried over from a parent
-            # version. It is intentionally NOT re-appended — reports ship without it.
-            while report_content.rstrip().endswith(_REPORT_FOOTER):
-                idx = report_content.rstrip().rfind(_REPORT_FOOTER)
-                report_content = report_content[:idx].rstrip()
-                if report_content.rstrip().endswith("---"):
-                    report_content = report_content.rstrip()[:-3].rstrip()
-
-            metadata = _extract_metadata(report_content)
-
-            # ── Phase 3: WRITE (short-lived session) ─────────────────────
-            async with shielded_async_session() as write_session:
-                report = Report(
-                    title=topic,
-                    content=report_content,
-                    report_metadata=metadata,
-                    report_style=report_style,
-                    search_space_id=search_space_id,
-                    thread_id=resolve_root_thread_id(runtime, thread_id),
-                    report_group_id=report_group_id,
-                )
-                write_session.add(report)
-                await write_session.commit()
-                await write_session.refresh(report)
-
-                # Brand-new report (v1): point the group at itself.
-                if not report.report_group_id:
-                    report.report_group_id = report.id
-                    await write_session.commit()
-
-                saved_report_id = report.id
-                saved_group_id = report.report_group_id
-
-            logger.info(
-                f"[generate_report] Created report {saved_report_id} "
-                f"(group={saved_group_id}): "
-                f"{metadata.get('word_count', 0)} words, "
-                f"{metadata.get('section_count', 0)} sections"
-            )
-
-            payload: dict[str, Any] = {
-                "status": "ready",
-                "report_id": saved_report_id,
-                "title": topic,
-                "word_count": metadata.get("word_count", 0),
-                "is_revision": bool(parent_report_content),
-                "report_markdown": report_content,
-                "message": f"Report generated successfully: {topic}",
-            }
-            receipt = make_receipt(
+        succeeded = payload.get("status") == "ready"
+        report_id = payload.get("report_id")
+        return with_receipt(
+            payload=payload,
+            receipt=make_receipt(
                 route="deliverables",
                 type="report",
                 operation="generate",
-                status="success",
-                external_id=str(saved_report_id),
+                status="success" if succeeded else "failed",
+                external_id=str(report_id) if report_id is not None else None,
                 preview=topic,
-            )
-            return with_receipt(
-                payload=payload,
-                receipt=receipt,
-                tool_call_id=runtime.tool_call_id,
-            )
-
-        except Exception as e:
-            error_message = str(e)
-            logger.exception(f"[generate_report] Error: {error_message}")
-            report_id = await _save_failed_report(error_message)
-            return _failed(
-                {
-                    "status": "failed",
-                    "error": error_message,
-                    "report_id": report_id,
-                    "title": topic,
-                },
-                error=error_message,
-            )
+                error=None if succeeded else payload.get("error"),
+            ),
+            tool_call_id=runtime.tool_call_id,
+        )
 
     return generate_report

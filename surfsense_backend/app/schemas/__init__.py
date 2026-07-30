@@ -97,6 +97,8 @@ from .reports import (
     ReportBase,
     ReportContentRead,
     ReportContentUpdate,
+    ReportGenerateRequest,
+    ReportGenerateResponse,
     ReportRead,
     ReportVersionInfo,
 )
@@ -245,6 +247,8 @@ __all__ = [
     "ReportBase",
     "ReportContentRead",
     "ReportContentUpdate",
+    "ReportGenerateRequest",
+    "ReportGenerateResponse",
     "ReportRead",
     "ReportVersionInfo",
     "RoleCreate",

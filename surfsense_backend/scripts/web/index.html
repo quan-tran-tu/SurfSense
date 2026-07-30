@@ -1113,12 +1113,7 @@ function textBlocks() {
  * duplicating it:
  *   opts.display  — text shown in the user bubble (default: `question`)
  *   opts.query    — the actual user_query sent to the backend (default: `question`)
- *   opts.agent    — force the full agent for this turn, whatever the
- *                   "Retrieve then answer" checkbox says. Commands that need a
- *                   tool (/report, /revise → generate_report) set it, because
- *                   the retrieve-then-answer path binds no tools at all.
- *   opts.onDone   — awaited after the answer settles (used by /report to find
- *                   and announce the report the generate_report tool just wrote)
+ *   opts.onDone   — awaited after the answer settles
  */
 async function ask(question, opts = {}) {
   if (state.busy) return;
@@ -1143,7 +1138,7 @@ async function ask(question, opts = {}) {
         // The server retrieves first and answers in one tool-free call. The
         // rules that used to be smuggled into user_query now live in the
         // backend's simple_rag system prompt.
-        simple_rag: opts.agent ? false : state.simpleRag,
+        simple_rag: state.simpleRag,
       },
     });
 
@@ -1275,12 +1270,12 @@ function describeEvent(ev) {
 
 /* ---------------------------------------------------------- chat commands */
 //
-// Slash commands typed into the composer. /report and /revise drive the backend's
-// existing generate_report tool (in the `deliverables` subagent, reachable via the
-// `task` delegation tool) with a compelling directive, rather than any new
-// endpoint — so they always run on the agent (`agent: true`), never on the
-// tool-free retrieve-then-answer path. /export and /reports use the report
-// CRUD/export routes as-is.
+// Slash commands typed into the composer. None of them go through the chat
+// agent: /report and /revise POST to /reports/generate, which runs the same
+// report pipeline the generate_report tool wraps; /export, /reports and
+// /templates use the report CRUD/export routes. So every command works on
+// whatever model the space is pinned to, including ones too small to drive the
+// agent — the model only ever writes prose, never picks a tool.
 
 const EXPORT_FORMATS = ["pdf", "docx", "html", "latex", "epub", "odt", "plain", "md"];
 
@@ -1302,69 +1297,47 @@ async function runCommand(line) {
 }
 
 /**
- * Wrap a report request in a directive that MUST reach generate_report. The tool
- * is two delegation hops away (supervisor → deliverables → generate_report), so
- * weaker models need to be told the exact path — and often still miss it, which
- * is why the answer path stopped relying on directives like this one. kb_search
- * lets the tool pull its own sources from the knowledge base.
+ * Build the `user_instructions` argument — the only field of the generate call
+ * that reaches the report-writing prompt.
  *
- * Written in Vietnamese — the knowledge bases this deployment serves are
- * Vietnamese, and the report must come out in Vietnamese by default. When a
- * template is given, its outline + a style excerpt ride along in a
- * <report_format> block that the agent must copy verbatim into
- * user_instructions, which is the only argument of generate_report that
- * reaches the report-writing prompt.
+ * This used to be a 4 KB directive telling the agent which subagent to delegate
+ * to, which tool to call, and what to put in each of its six arguments. The
+ * server now takes those arguments directly, so all that survives is the part
+ * that was ever about the report itself: write in Vietnamese, and follow the
+ * template when one is given.
+ *
+ * Vietnamese because the knowledge bases this deployment serves are Vietnamese
+ * and reports must come out that way by default.
  */
-function buildReportQuery(request, parentId, tpl = null) {
-  const revise = parentId
-    ? `\n- parent_report_id: ${parentId} — đây là SỬA LẠI báo cáo đó. Đưa thay đổi được ` +
-      `yêu cầu vào user_instructions và giữ nguyên các phần không liên quan.`
-    : "";
-  const tplInstr = tpl
-    ? `\n- user_instructions: chép NGUYÊN VĂN toàn bộ nội dung nằm giữa <report_format> và
-  </report_format> bên dưới (không tóm tắt, không lược bớt), cộng thêm mọi yêu cầu
-  khác của người dùng.`
-    : `\n- user_instructions: "Viết báo cáo bằng tiếng Việt." cộng thêm mọi yêu cầu khác
-  của người dùng.`;
-  const tplBlock = tpl
-    ? `
+function buildReportInstructions(request, tpl = null) {
+  const base = "Viết báo cáo bằng tiếng Việt.";
+  const ask = request.trim() ? `\n\nYêu cầu của người dùng:\n${request.trim()}` : "";
+  if (!tpl) return base + ask;
 
-<report_format>
-Báo cáo phải viết bằng tiếng Việt và PHẢI theo đúng định dạng của báo cáo mẫu
-"${tpl.name}" dưới đây: giữ đúng bố cục, thứ tự các phần và cách đặt tiêu đề; bắt
-chước văn phong, cách hành văn và cách trình bày của trích đoạn mẫu. Chỉ thay nội
-dung cho phù hợp với chủ đề được yêu cầu.
+  return `${base}
+
+Báo cáo PHẢI theo đúng định dạng của báo cáo mẫu "${tpl.name}" dưới đây: giữ đúng
+bố cục, thứ tự các phần và cách đặt tiêu đề; bắt chước văn phong, cách hành văn và
+cách trình bày của trích đoạn mẫu. Chỉ thay nội dung cho phù hợp với chủ đề được
+yêu cầu.
 
 Bố cục các phần của báo cáo mẫu:
 ${tpl.outline.join("\n")}
 
 Trích đoạn của báo cáo mẫu (để bắt chước văn phong và cách viết):
-${tpl.content.slice(0, TPL_PROMPT_CHARS)}
-</report_format>`
-    : "";
+${tpl.content.slice(0, TPL_PROMPT_CHARS)}${ask}`;
+}
 
-  return `<instructions>
-Người dùng muốn một BÁO CÁO được lưu thành sản phẩm (artifact) — không phải một câu
-trả lời chat. Bạn BẮT BUỘC tạo nó bằng cách ủy quyền cho subagent \`deliverables\` và
-gọi tool \`generate_report\` đúng MỘT lần. Không trả lời bằng văn xuôi, và không chỉ
-tóm tắt trong chat.
-
-Gọi generate_report với:
-- topic: tiêu đề ngắn (tối đa 8 từ) mô tả báo cáo
-- source_strategy: "kb_search"
-- search_queries: 2-5 truy vấn cụ thể lấy đúng tư liệu mà báo cáo cần. Tài liệu trong
-  kho chủ yếu là tiếng Việt — hãy tìm bằng tiếng Việt; nếu tài liệu ở ngôn ngữ khác
-  thì tìm bằng ngôn ngữ đó.
-- report_style: "detailed", trừ khi yêu cầu nói rõ là báo cáo ngắn (brief) hoặc
-  nghiên cứu sâu (deep_research)${tplInstr}${revise}
-
-Sau khi tool trả về, trả lời đúng MỘT dòng ngắn bằng tiếng Việt nêu tên báo cáo.
-Không bao giờ báo thành công khi tool chưa xác nhận.
-</instructions>${tplBlock}
-
-<report_request>
-${request}
-</report_request>`;
+/**
+ * Pick the report_style the server expects. The agent used to infer this from
+ * prose; it is a keyword match, so we do it here and skip the round trip.
+ */
+function reportStyleFor(request) {
+  const q = request.toLowerCase();
+  if (/\b(brief|ngắn|ngan|tóm tắt|tom tat|súc tích|suc tich)\b/.test(q)) return "brief";
+  if (/\b(deep[\s_-]?research|nghiên cứu sâu|nghien cuu sau|chuyên sâu|chuyen sau)\b/.test(q))
+    return "deep_research";
+  return "detailed";
 }
 
 /** Every report belonging to the current thread, newest first. */
@@ -1375,21 +1348,22 @@ async function threadReports() {
 }
 
 /**
- * The newest report in this thread with id > `beforeId`, i.e. one created by the
- * turn we just ran. generate_report commits inside the turn, but that can trail the
- * last streamed byte, so retry briefly (as settleAnswer does for the message).
+ * Write (or revise) a report via POST /reports/generate.
+ *
+ * No agent turn: the endpoint runs the same pipeline generate_report always
+ * ran, and every argument it needs is already known here — the template block,
+ * the style, the parent id. Only the KB search queries are model-derived, and
+ * the server does that in one small call. The old path spent an entire agent
+ * turn getting a model to guess arguments we had all along, and failed outright
+ * on models that couldn't drive the two delegation hops.
+ *
+ * The request is a single blocking call rather than a stream: generation takes
+ * a while and there is nothing to show mid-flight, so the assistant bubble just
+ * carries a status line until the report id comes back.
  */
-async function newestReportSince(beforeId) {
-  for (const wait of [0, 500, 1200]) {
-    if (wait) await sleep(wait);
-    const fresh = (await threadReports()).filter((r) => r.id > beforeId);
-    if (fresh.length) return fresh[0];
-  }
-  return null;
-}
-
 async function reportCommand(request, parentId = null) {
   if (!request) { toast("Usage: /report [t<id>] <what the report should cover>", "warn"); return; }
+  if (state.busy) return;
 
   // "/report t2 <query>" formats the report after uploaded template t2. Only the
   // /report form takes a template — a revision keeps its parent's structure.
@@ -1401,32 +1375,51 @@ async function reportCommand(request, parentId = null) {
     request = (m[2] ?? "").trim();
     if (!request) { toast(`Usage: /report t${tpl.id} <what the report should cover>`, "warn"); return; }
   }
-  const before = (await threadReports()).reduce((m, r) => Math.max(m, r.id), 0);
 
-  await ask(request, {
-    display: (parentId ? `/revise ${parentId} ` : `/report ${tpl ? `t${tpl.id} ` : ""}`) + request,
-    query: buildReportQuery(request, parentId, tpl),
-    // generate_report is a tool, so this turn needs the agent regardless of
-    // the "Retrieve then answer" setting.
-    agent: true,
-    onDone: async ({ setStatus }) => {
-      const rep = await newestReportSince(before);
-      if (!rep) {
-        setStatus("No report was produced — the model may not have called generate_report. " +
-                  "Try rephrasing, or run /report again.", "warn");
-        return;
+  state.busy = true;
+  $("#send").disabled = true;
+
+  addMessage("user",
+    (parentId ? `/revise ${parentId} ` : `/report ${tpl ? `t${tpl.id} ` : ""}`) + request);
+  const { bubble, setStatus } = addMessage("assistant", "", true);
+  setStatus(parentId ? "Đang sửa lại báo cáo…" : "Đang tìm tư liệu và viết báo cáo…");
+
+  try {
+    const res = await apiJson("POST", "/api/v1/reports/generate", {
+      json: {
+        search_space_id: state.spaceId,
+        thread_id: state.threadId,
+        request,
+        report_style: reportStyleFor(request),
+        user_instructions: buildReportInstructions(request, tpl),
+        parent_report_id: parentId,
+      },
+    });
+
+    if (!res || res.status !== "ready" || !res.report_id) {
+      setStatus(`Report failed: ${res?.error ?? "unknown error"}`, "warn");
+      if (res?.report_id) {
+        addSystemNote(`⚠ Report #${res.report_id} failed: ${res.error ?? "unknown error"}`);
       }
-      if (rep.report_metadata?.status === "failed") {
-        addSystemNote(`⚠ Report #${rep.id} failed: ${rep.report_metadata?.error_message ?? "unknown error"}`);
-        return;
-      }
-      state.lastReportId = rep.id;
-      addSystemNote(
-        `📄 Report #${rep.id} — “${rep.title}” is ready.\n` +
-        `Download it:  /export ${rep.id} pdf   (also: docx, html, latex, epub, odt, plain, md)\n` +
-        `Revise it:    /revise ${rep.id} <what to change>`);
-    },
-  });
+      return;
+    }
+
+    state.lastReportId = res.report_id;
+    setStatus("");
+    bubble.innerHTML = renderMarkdown(
+      `Đã tạo báo cáo **“${res.title}”**${res.word_count ? ` (${res.word_count} từ)` : ""}.`);
+    addSystemNote(
+      `📄 Report #${res.report_id} — “${res.title}” is ready.\n` +
+      `Download it:  /export ${res.report_id} pdf   (also: docx, html, latex, epub, odt, plain, md)\n` +
+      `Revise it:    /revise ${res.report_id} <what to change>`);
+  } catch (e) {
+    setStatus(`Report failed: ${e.message}`, "warn");
+  } finally {
+    bubble.classList.remove("cursor");
+    state.busy = false;
+    $("#send").disabled = false;
+    $("#q").focus();
+  }
 }
 
 function reviseCommand(arg) {

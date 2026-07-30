@@ -36,7 +36,13 @@ from app.db import (
     SearchSpaceMembership,
     get_async_session,
 )
-from app.schemas import ReportContentRead, ReportContentUpdate, ReportRead
+from app.schemas import (
+    ReportContentRead,
+    ReportContentUpdate,
+    ReportGenerateRequest,
+    ReportGenerateResponse,
+    ReportRead,
+)
 from app.schemas.reports import ReportVersionInfo
 from app.templates.export_helpers import (
     get_html_css_path,
@@ -229,6 +235,90 @@ async def _get_version_siblings(
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+
+@router.post("/reports/generate", response_model=ReportGenerateResponse)
+async def generate_report_endpoint(
+    request: ReportGenerateRequest,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Write a report directly, bypassing the chat agent.
+
+    The agent path reaches the same pipeline through two delegation hops
+    (supervisor → ``deliverables`` → ``generate_report``), whose only purpose is
+    to have a model produce six argument values. A caller that already knows
+    five of them — which a ``/report`` command does — can call the pipeline
+    itself. The sixth (the KB queries) is one small generation, not tool-calling,
+    so it works on models that cannot drive the agent at all.
+
+    Returns 200 with ``status: "failed"`` when generation fails; the pipeline
+    persists a failed report row and the caller wants its id.
+    """
+    from app.agents.chat.multi_agent_chat.subagents.builtins.deliverables.tools.report import (
+        generate_report_document,
+    )
+    from app.services.llm_service import get_agent_llm
+    from app.services.report_planning import plan_report_request
+
+    try:
+        await check_search_space_access(session, auth, request.search_space_id)
+
+        # A revision must target a report the caller can reach, in this space —
+        # otherwise parent_report_id would read another space's content.
+        if request.parent_report_id is not None:
+            parent = await _get_report_with_access(
+                request.parent_report_id, session, auth
+            )
+            if parent.search_space_id != request.search_space_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Parent report belongs to a different search space",
+                )
+
+        topic = (request.topic or "").strip()
+        queries = [q.strip() for q in (request.search_queries or []) if q.strip()]
+
+        if not topic or not queries:
+            llm = await get_agent_llm(session, request.search_space_id)
+            planned_topic, planned_queries = await plan_report_request(
+                llm, request.request
+            )
+            topic = topic or planned_topic
+            queries = queries or planned_queries
+
+        # Generation runs for minutes. Release the request session first so it
+        # isn't holding a pooled connection (and its ACCESS SHARE locks) the
+        # whole time — the pipeline opens its own short-lived sessions.
+        await session.commit()
+        await session.close()
+
+        payload = await generate_report_document(
+            topic=topic,
+            search_space_id=request.search_space_id,
+            thread_id=request.thread_id,
+            source_strategy="kb_search",
+            search_queries=queries,
+            report_style=request.report_style,
+            user_instructions=request.user_instructions,
+            parent_report_id=request.parent_report_id,
+        )
+
+        return ReportGenerateResponse(
+            status=payload.get("status", "failed"),
+            report_id=payload.get("report_id"),
+            title=payload.get("title", topic),
+            word_count=payload.get("word_count", 0),
+            is_revision=payload.get("is_revision", False),
+            message=payload.get("message"),
+            error=payload.get("error"),
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=500, detail="Database error occurred while generating report"
+        ) from None
 
 
 @router.get("/reports", response_model=list[ReportRead])
