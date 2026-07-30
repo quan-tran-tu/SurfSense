@@ -6,6 +6,7 @@ each shown passage registered for ``[n]`` citation along the way.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,8 +36,13 @@ async def search_knowledge_base_context(
     scope: SearchScope | None = None,
     reranker: RerankerService | None = None,
     top_k: int = _DEFAULT_TOP_K,
+    keyword_terms: Sequence[str] | None = None,
 ) -> str | None:
     """Retrieve KB evidence for ``query`` and render it, registering each ``[n]``.
+
+    ``keyword_terms`` widens only the keyword leg (see
+    :func:`~.hybrid_search._keyword_tsquery`); ``query`` still drives the
+    semantic leg and the reranker, so expansion terms cannot dilute either.
 
     Returns ``None`` when nothing matched, so the caller can skip the block.
     """
@@ -46,6 +52,7 @@ async def search_knowledge_base_context(
         query=query,
         scope=scope or SearchScope(),
         top_k=top_k,
+        keyword_terms=keyword_terms,
     )
     return build_context(query, hits, registry, reranker=reranker)
 

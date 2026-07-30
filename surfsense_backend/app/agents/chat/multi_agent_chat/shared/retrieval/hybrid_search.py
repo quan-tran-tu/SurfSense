@@ -3,6 +3,11 @@
 Only matched chunks are citable, so the fused result already holds every passage
 shown — there is no second per-document fetch. Returns the top ``top_k``
 documents, each carrying its matched chunks in reading order.
+
+The keyword leg has two modes. By default it runs ``plainto_tsquery`` over the
+whole query, which ANDs every surviving lexeme. Callers that can decompose their
+query into independent terms pass ``keyword_terms`` instead and get an OR fold —
+see :func:`_keyword_tsquery`.
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Sequence
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,8 +44,13 @@ async def search_chunks(
     scope: SearchScope,
     top_k: int,
     query_embedding: list[float] | None = None,
+    keyword_terms: Sequence[str] | None = None,
 ) -> list[DocumentHit]:
     """Top ``top_k`` documents for ``query`` within scope, each with its chunks.
+
+    ``query`` drives the semantic leg (and is what a reranker should score
+    against). ``keyword_terms``, when given, replaces ``query`` in the keyword
+    leg with an OR over the supplied terms.
 
     Instrumented seam: traces the search, records its duration, and logs a
     timing line. The fusion logic lives in :func:`_search`.
@@ -58,6 +69,7 @@ async def search_chunks(
                 scope=scope,
                 top_k=top_k,
                 query_embedding=query_embedding,
+                keyword_terms=keyword_terms,
             )
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000
@@ -82,6 +94,7 @@ async def _search(
     scope: SearchScope,
     top_k: int,
     query_embedding: list[float] | None,
+    keyword_terms: Sequence[str] | None = None,
 ) -> list[DocumentHit]:
     """Fusion search itself: resolve scope, fuse the two legs, group by document."""
     document_types = _resolve_document_types(scope.document_types)
@@ -102,6 +115,7 @@ async def _search(
         query_embedding=query_embedding,
         conditions=conditions,
         candidate_pool=top_k * _CANDIDATE_MULTIPLIER,
+        keyword_terms=keyword_terms,
     )
     return _group_into_documents(rows, top_k=top_k)
 
@@ -164,6 +178,30 @@ def _base_conditions(
     return conditions
 
 
+def _keyword_tsquery(query: str, keyword_terms: Sequence[str] | None):
+    """The keyword leg's tsquery: AND over one query, OR over an explicit term list.
+
+    ``plainto_tsquery`` inserts ``&`` between every surviving lexeme, so passing
+    a whole question matches only a chunk containing *all* of its words. Past a
+    handful of words that is no chunk at all, and because the keyword leg is
+    gated on ``@@`` the whole leg then silently contributes nothing to the
+    fusion — the search quietly degrades to semantic-only.
+
+    A caller that has decomposed its query into independent terms passes them
+    here instead and gets an OR fold: each term is its own way in, so adding
+    terms can only widen the match. Each term still goes through
+    ``plainto_tsquery``, which keeps the query-side and document-side parsers
+    identical (so a term like ``06/07/2026`` matches however Postgres chooses to
+    tokenize it) and leaves no room for tsquery syntax errors or injection.
+    """
+    if not keyword_terms:
+        return func.plainto_tsquery("english", query)
+    tsquery = func.plainto_tsquery("english", keyword_terms[0])
+    for term in keyword_terms[1:]:
+        tsquery = tsquery.op("||")(func.plainto_tsquery("english", term))
+    return tsquery.self_group()
+
+
 async def _fused_chunks(
     db_session: AsyncSession,
     *,
@@ -171,10 +209,11 @@ async def _fused_chunks(
     query_embedding: list[float],
     conditions: list,
     candidate_pool: int,
+    keyword_terms: Sequence[str] | None = None,
 ):
     """Run semantic + keyword legs and fuse them with RRF; return (Chunk, score) rows."""
     tsvector = func.to_tsvector("english", Chunk.content)
-    tsquery = func.plainto_tsquery("english", query)
+    tsquery = _keyword_tsquery(query, keyword_terms)
 
     semantic = (
         select(

@@ -14,8 +14,10 @@ tools bound. What is left is a single forward pass over supplied context,
 which is a job small instruct models are actually good at.
 
 Deliberate trade-offs versus the agent path:
-  * One retrieval per turn, using the user's question verbatim as the query —
-    no refinement, no second pass in another language.
+  * One retrieval per turn — no iteration, no second pass in another language.
+    The question is not used verbatim, though: :mod:`.search_query` widens it
+    into keyword terms first, which is the cheap deterministic stand-in for the
+    query rewrite a capable model does before calling the search tool.
   * No ``web_search``, ``scrape_webpage``, ``update_memory``, connectors, or
     document writes. This path is read-only Q&A.
   * No conversation history in the retrieval query, so a bare follow-up
@@ -46,10 +48,16 @@ from app.tasks.chat.streaming.helpers.chunk_parts import extract_chunk_parts
 from app.utils.perf import get_perf_logger
 
 from .prompt import NO_RESULTS_MESSAGE, SIMPLE_RAG_SYSTEM_PROMPT
+from .search_query import build_search_terms
 
 _perf_log = get_perf_logger()
 
-_DEFAULT_TOP_K = 10
+# Higher than the agent path's per-call default because this flow gets one
+# retrieval per turn instead of one per tool call: breadth has to come from a
+# single search rather than from the union of several. Note this also scales the
+# candidate pool (``_CANDIDATE_MULTIPLIER``), and therefore how much context the
+# prompt can grow to — the ceiling is roughly ``top_k * 5`` chunks.
+_DEFAULT_TOP_K = 16
 
 
 async def _retrieve(
@@ -60,6 +68,7 @@ async def _retrieve(
     mentioned_document_ids: list[int] | None,
     mentioned_folder_ids: list[int] | None,
     top_k: int,
+    keyword_terms: list[str],
 ) -> str | None:
     """Run the retrieval spine on its own short-lived session.
 
@@ -87,6 +96,9 @@ async def _retrieve(
             # is doing all the work — so use one when it is available.
             reranker=RerankerService.get_reranker_instance(),
             top_k=top_k,
+            # Widens only the keyword leg. ``query`` stays the question, so the
+            # semantic leg and the reranker still score against what was asked.
+            keyword_terms=keyword_terms or None,
         )
 
 
@@ -114,6 +126,8 @@ async def stream_simple_rag(
     """
     registry = CitationRegistry()
 
+    keyword_terms = build_search_terms(question)
+
     _t0 = time.perf_counter()
     context = await _retrieve(
         search_space_id=search_space_id,
@@ -122,11 +136,13 @@ async def stream_simple_rag(
         mentioned_document_ids=mentioned_document_ids,
         mentioned_folder_ids=mentioned_folder_ids,
         top_k=top_k,
+        keyword_terms=keyword_terms,
     )
     _perf_log.info(
-        "[simple_rag] Retrieval in %.3fs (hits=%s)",
+        "[simple_rag] Retrieval in %.3fs (hits=%s, terms=%d)",
         time.perf_counter() - _t0,
         "none" if context is None else len(registry.by_n),
+        len(keyword_terms),
     )
 
     # Close the "Understanding your request" placeholder the orchestrator

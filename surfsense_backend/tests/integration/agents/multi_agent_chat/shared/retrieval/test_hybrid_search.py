@@ -234,3 +234,105 @@ async def test_top_k_caps_the_number_of_documents(db_session, db_search_space):
     )
 
     assert len(results) == 2
+
+
+_LONG_QUERY = "summarize everything about asyncio and threading and subprocesses"
+
+
+async def _keyword_leg_fixture(db_session, search_space_id):
+    """A keyword-relevant document that is semantically *further* than a decoy.
+
+    Ranking is what isolates the keyword leg: the semantic leg has no relevance
+    threshold, so both documents are always retrieved and only their order says
+    which leg contributed.
+    """
+    relevant = await _add_document(
+        db_session,
+        search_space_id=search_space_id,
+        title="Asyncio Guide",
+        chunks=[("The asyncio library enables concurrency.", 0, _axis(1))],
+    )
+    decoy = await _add_document(
+        db_session,
+        search_space_id=search_space_id,
+        title="Dessert",
+        chunks=[("Recipes for chocolate cake.", 0, _axis(0))],
+    )
+    return relevant, decoy
+
+
+async def test_whole_query_keyword_leg_requires_every_word(db_session, db_search_space):
+    """Baseline for the OR path below: ``plainto_tsquery`` ANDs its lexemes.
+
+    A question mentioning anything the document does not contain takes the
+    keyword leg to zero — which is why a long natural-language query silently
+    degrades this search to semantic-only, letting the decoy win.
+    """
+    _, decoy = await _keyword_leg_fixture(db_session, db_search_space.id)
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query=_LONG_QUERY,
+        scope=SearchScope(),
+        top_k=5,
+        query_embedding=_axis(0),
+    )
+
+    assert results[0].document_id == decoy.id
+
+
+async def test_keyword_terms_match_any_one_term(db_session, db_search_space):
+    """``keyword_terms`` ORs, so one matching term is enough to outrank the decoy."""
+    relevant, _ = await _keyword_leg_fixture(db_session, db_search_space.id)
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query=_LONG_QUERY,
+        scope=SearchScope(),
+        top_k=5,
+        query_embedding=_axis(0),
+        keyword_terms=["threading", "asyncio", "subprocesses"],
+    )
+
+    assert results[0].document_id == relevant.id
+
+
+async def test_keyword_terms_reach_documents_sharing_no_other_term(
+    db_session, db_search_space
+):
+    """The date-range case: one term per day, each pulling in its own document.
+
+    No daily report shares a term with any other, so nothing but its own date
+    can retrieve it — and none of them is semantically close to the query.
+    """
+    reports = [
+        await _add_document(
+            db_session,
+            search_space_id=db_search_space.id,
+            title=f"Report {day:02d}",
+            chunks=[(f"Daily report for 0{day}/07/2026.", 0, _axis(day))],
+        )
+        for day in (6, 7, 8)
+    ]
+    decoy = await _add_document(
+        db_session,
+        search_space_id=db_search_space.id,
+        title="Dessert",
+        chunks=[("Recipes for chocolate cake.", 0, _axis(0))],
+    )
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query="tổng hợp thông tin từ 06/07/2026 đến 08/07/2026",
+        scope=SearchScope(),
+        top_k=5,
+        query_embedding=_axis(0),
+        keyword_terms=["06/07/2026", "07/07/2026", "08/07/2026"],
+    )
+
+    ranked = [hit.document_id for hit in results]
+    assert set(ranked[:3]) == {report.id for report in reports}
+    assert ranked.index(decoy.id) == 3
