@@ -379,14 +379,18 @@ const LS = "surfsense.mini";
 
 // serve.py rewrites the marker below into assignments: --deepseek <key> injects
 // apiKey; --vllm <model> --vllm_port <port> injects apiKey ("EMPTY"), model and
-// modelBase. Under a plain static server it stays a comment, and the login
-// screen asks for the key. Injected values are deliberately NOT written to
-// localStorage: they live only in the page that served them.
+// modelBase; --backend <url> injects backend. Under a plain static server it
+// stays a comment, and the login screen asks. Injected values are deliberately
+// NOT written to localStorage: they live only in the page that served them.
 window.SS_CONFIG = window.SS_CONFIG || {};
 /*__SS_CONFIG__*/
 const INJECTED_KEY = window.SS_CONFIG.apiKey || "";
 const INJECTED_MODEL = window.SS_CONFIG.model || "";
 const INJECTED_BASE = window.SS_CONFIG.modelBase || "";
+// The empty string is a meaningful backend ("same origin, so prefix nothing"),
+// so presence — not truthiness — is what says the deployment chose one.
+const HAS_BACKEND = Object.hasOwn(window.SS_CONFIG, "backend");
+const INJECTED_BACKEND = HAS_BACKEND ? String(window.SS_CONFIG.backend).replace(/\/$/, "") : "";
 
 const state = {
   backend: "http://localhost:8000",
@@ -432,7 +436,10 @@ function savePrefs() {
     };
   }
   localStorage.setItem(LS, JSON.stringify({
-    backend: state.backend, email: state.email,
+    // undefined drops the key, so a served backend is not stored and a value
+    // stored before the deployment started serving one is dropped on first save.
+    backend: HAS_BACKEND ? undefined : state.backend,
+    email: state.email,
     apiKey: INJECTED_KEY ? "" : state.apiKey,
     model: INJECTED_MODEL ? "" : state.model,
     modelBase: INJECTED_BASE ? "" : state.modelBase,
@@ -468,6 +475,8 @@ function loadPrefs() {
 
   adoptUser(state.email);
   // Served values always win; empty leftovers fall back to the DeepSeek defaults.
+  if (HAS_BACKEND) state.backend = INJECTED_BACKEND;
+  else state.backend = state.backend || "http://localhost:8000";
   if (INJECTED_KEY) state.apiKey = INJECTED_KEY;
   state.model = INJECTED_MODEL || state.model || "deepseek-chat";
   state.modelBase = INJECTED_BASE || state.modelBase || "https://api.deepseek.com/v1";
@@ -498,6 +507,9 @@ class ApiError extends Error {
   constructor(status, detail) { super(detail); this.status = status; this.detail = detail; }
 }
 
+/** state.backend is "" when the API shares this page's origin — name it anyway. */
+const backendName = () => state.backend || location.origin;
+
 /**
  * Every request carries the session cookie (credentials: "include"). The browser
  * sets Origin for us, which is what the backend's CSRF check reads — hence the
@@ -517,14 +529,14 @@ async function api(method, path, opts = {}) {
 
   let res;
   try { res = await send(); }
-  catch { throw new ApiError(0, `cannot reach ${state.backend} — is the backend up?`); }
+  catch { throw new ApiError(0, `cannot reach ${backendName()} — is the backend up?`); }
 
   if ((res.status === 401 || res.status === 403) && !state.relogged && state.password) {
     state.relogged = true;
     await login(state.email, state.password);
     state.relogged = false;
     try { res = await send(); }
-    catch { throw new ApiError(0, `cannot reach ${state.backend}`); }
+    catch { throw new ApiError(0, `cannot reach ${backendName()}`); }
   }
   if (!res.ok) throw new ApiError(res.status, await errorDetail(res));
   return res;
@@ -541,7 +553,7 @@ async function login(email, password) {
     credentials: "include",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ username: email, password }),
-  }).catch(() => { throw new ApiError(0, `cannot reach ${state.backend}`); });
+  }).catch(() => { throw new ApiError(0, `cannot reach ${backendName()}`); });
 
   if (res.status === 400) throw new ApiError(400, "Bad credentials. Register first, or check the password.");
   if (!res.ok) throw new ApiError(res.status, await errorDetail(res));
@@ -553,7 +565,7 @@ async function register(email, password) {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
-  }).catch(() => { throw new ApiError(0, `cannot reach ${state.backend}`); });
+  }).catch(() => { throw new ApiError(0, `cannot reach ${backendName()}`); });
 
   if (res.ok) return "registered";
   const detail = await errorDetail(res);
@@ -2288,7 +2300,9 @@ async function doAuth(mode) {
 
   Object.assign(state, {
     email, password, apiKey,
-    backend: ($("#backend").value.trim() || "http://localhost:8000").replace(/\/$/, ""),
+    backend: HAS_BACKEND
+      ? INJECTED_BACKEND
+      : ($("#backend").value.trim() || "http://localhost:8000").replace(/\/$/, ""),
     model: INJECTED_MODEL || $("#model").value.trim() || "deepseek-chat",
     modelBase: INJECTED_BASE || $("#modelBase").value.trim() || "https://api.deepseek.com/v1",
   });
@@ -2326,6 +2340,11 @@ function init() {
   if (INJECTED_KEY) $("#apiKeyRow").classList.add("hide");
   if (INJECTED_MODEL) { $("#model").value = INJECTED_MODEL; $("#model").disabled = true; }
   if (INJECTED_BASE) { $("#modelBase").value = INJECTED_BASE; $("#modelBase").disabled = true; }
+  if (HAS_BACKEND) {
+    $("#backend").value = INJECTED_BACKEND;
+    $("#backend").placeholder = "same origin as this page";
+    $("#backend").disabled = true;
+  }
 
   // Origin is the whole ballgame: the backend's CSRF middleware only accepts an
   // allow-listed one, and file:// sends "null". Fail loudly rather than let every
@@ -2337,7 +2356,18 @@ function init() {
       "write will fail the backend's CSRF check.\n\nServe it instead:\n" +
       "  python -m http.server 3000 --directory surfsense_backend/scripts/web\n\n" +
       "then open http://localhost:3000.";
-  } else if (location.port !== "3000") {
+  } else if (location.protocol === "https:" && state.backend.startsWith("http://")) {
+    // The browser drops this request before it is sent and reports only a
+    // generic network error, which reads exactly like "the backend is down".
+    const w = $("#originWarn");
+    w.classList.remove("hide");
+    w.textContent = `This page is served over HTTPS but the backend is ${state.backend}. ` +
+      `Browsers block plain-HTTP requests from an HTTPS page (mixed content), so every ` +
+      `request — sign-in included — fails as if the backend were unreachable. Put the API ` +
+      `behind HTTPS on the same domain.`;
+  } else if (!HAS_BACKEND && location.port !== "3000") {
+    // Only a guess when nobody configured the deployment: a served backend URL
+    // means someone did, and allow-listed this origin along with it.
     const w = $("#originWarn");
     w.classList.remove("hide");
     w.className = "toast warn";

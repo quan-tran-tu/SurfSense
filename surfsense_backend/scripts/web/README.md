@@ -42,6 +42,11 @@ The backend must be running (`http://localhost:8000` by default — change it
 under *Advanced*), along with its Celery worker, or folders will never finish
 indexing.
 
+`--backend <url>` bakes the API's address in the same way, so a deployment sets
+it once instead of every user typing it under *Advanced* — the field then shows
+the served value, locked, and nothing is kept in `localStorage`. See
+[Behind a domain](#behind-a-domain).
+
 ## The origin must be `http://localhost:3000`
 
 The backend's CSRF middleware (`app/auth/csrf.py`) rejects any
@@ -85,8 +90,48 @@ listens on.)
   CORS (`app/app.py`) already allows any *port* on those two by regex, but a bare
   hostname or IP falls outside it.
 
-The page warns when it isn't on port 3000. That check is a heuristic — if you
-allow-listed a different origin properly, ignore it.
+The page warns when it isn't on port 3000. That check is a heuristic, and it is
+skipped entirely once `--backend` is set: a served backend URL means somebody
+configured the deployment, origins included.
+
+## Behind a domain
+
+Putting the page on a real hostname takes one flag here and one setting in the
+backend. Say the domain is `osint.example`:
+
+```sh
+./serve.py --backend https://osint.example --vllm ... # or --backend same-origin
+```
+
+- **One host, two path rules (recommended).** Route `/auth/*` and `/api/v1/*` to
+  the API and everything else to this server, then pass `--backend same-origin`
+  and the page uses relative URLs. Two rules, not one, because the client calls
+  two prefixes at the API's root. A single rewriting `/<prefix>/*` rule works
+  too — pass that prefix as `--backend` — but nothing here strips it, so the
+  proxy must. Same-origin is the layout with no CORS to configure at all.
+- **Two hosts.** `--backend https://api.osint.example`. Everything is
+  cross-origin, so the backend must allow the *page's* origin (below).
+- **Match the scheme.** An HTTPS page cannot call an `http://` backend: the
+  browser blocks it as mixed content and reports a generic network error, which
+  looks exactly like the backend being down. The page now says so on the login
+  screen rather than letting you debug the wrong thing.
+
+Then, in the backend's environment (a restart, not a reload):
+
+```
+NEXT_FRONTEND_URL=https://osint.example
+CSRF_ALLOWED_ORIGINS=http://localhost:3000,https://osint.example
+```
+
+`NEXT_FRONTEND_URL` is what `app/app.py` builds CORS `allow_origins` from, and
+`app/auth/csrf.py` folds it into the CSRF allow-list too. Both checks read the
+*page's* origin, so it is that value both settings need — never the API's.
+Miss it and the symptom depends on which check bites first: CORS fails sign-in
+outright, CSRF lets sign-in through and 403s every write after it.
+
+Same-origin skips the CORS half but **not** the CSRF half — browsers still send
+`Origin` on a same-origin `POST`, and an unlisted one is still a 403. So the
+allow-list entry is required either way.
 
 ## What it does
 
