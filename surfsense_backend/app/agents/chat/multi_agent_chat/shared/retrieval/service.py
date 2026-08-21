@@ -35,6 +35,14 @@ if TYPE_CHECKING:
 # The ``search_knowledge_base`` tool keeps its own, lower, model-facing default.
 DEFAULT_TOP_K = 16
 
+# How many documents to rank before cutting to ``top_k``. The fused chunk pool
+# spans far more documents than it returns — measured at 47-57 for a 16-document
+# search — so ranking only the 16 that RRF happened to order first wasted the
+# cross-encoder on a third of what the search had already found. Ranking 3x and
+# cutting afterwards changed 7-10 of the final 16 documents on every query
+# measured, for about +1.9s on an A100.
+_RERANK_FETCH_MULTIPLIER = 3
+
 
 async def search_knowledge_base_hits(
     db_session: AsyncSession,
@@ -51,16 +59,26 @@ async def search_knowledge_base_hits(
     ``keyword_terms`` widens only the keyword leg (see
     :func:`~.hybrid_search._keyword_tsquery`); ``query`` still drives the
     semantic leg and the reranker, so expansion terms cannot dilute either.
+
+    Order matters here: rank a wider set, *then* cut to ``top_k``. Cutting first
+    leaves the reranker able only to reorder what RRF already chose, never to
+    promote the document RRF ranked 17th — which is the one case a reranker is
+    bought for. Without a reranker there is nothing to reorder, so the widened
+    fetch is skipped and the result is exactly what it always was.
     """
+    ranked_pool = (
+        top_k * _RERANK_FETCH_MULTIPLIER if reranker is not None else top_k
+    )
     hits = await search_chunks(
         db_session,
         search_space_id=search_space_id,
         query=query,
         scope=scope or SearchScope(),
         top_k=top_k,
+        fetch_k=ranked_pool,
         keyword_terms=keyword_terms,
     )
-    return rerank_hits(query, hits, reranker)
+    return rerank_hits(query, hits, reranker)[:top_k]
 
 
 async def search_knowledge_base_context(

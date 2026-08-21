@@ -2,7 +2,8 @@
 
 Only matched chunks are citable, so the fused result already holds every passage
 shown — there is no second per-document fetch. Returns the top ``top_k``
-documents, each carrying its matched chunks in reading order.
+documents (or ``fetch_k``, for a caller that reranks and cuts for itself), each
+carrying its matched chunks in reading order.
 
 The keyword leg has two modes. By default it runs ``plainto_tsquery`` over the
 whole query, which ANDs every surviving lexeme. Callers that can decompose their
@@ -44,6 +45,7 @@ async def search_chunks(
     query: str,
     scope: SearchScope,
     top_k: int,
+    fetch_k: int | None = None,
     query_embedding: list[float] | None = None,
     keyword_terms: Sequence[str] | None = None,
 ) -> list[DocumentHit]:
@@ -52,6 +54,14 @@ async def search_chunks(
     ``query`` drives the semantic leg (and is what a reranker should score
     against). ``keyword_terms``, when given, replaces ``query`` in the keyword
     leg with an OR over the supplied terms.
+
+    ``fetch_k`` widens only the *document* cut, for a caller that reranks and
+    then cuts to ``top_k`` itself. ``top_k`` still sizes the candidate chunk
+    pool, so widening costs no extra database work — it stops discarding
+    documents the pool already contains. That distinction is the whole point:
+    measured on a 1163-chunk space, an 80-chunk pool spans 47-57 documents, and
+    returning 16 of them threw away 31-41 candidates *before* the cross-encoder
+    could score any of them.
 
     Instrumented seam: traces the search, records its duration, and logs a
     timing line. The fusion logic lives in :func:`_search`.
@@ -69,6 +79,7 @@ async def search_chunks(
                 query=query,
                 scope=scope,
                 top_k=top_k,
+                fetch_k=fetch_k,
                 query_embedding=query_embedding,
                 keyword_terms=keyword_terms,
             )
@@ -94,6 +105,7 @@ async def _search(
     query: str,
     scope: SearchScope,
     top_k: int,
+    fetch_k: int | None,
     query_embedding: list[float] | None,
     keyword_terms: Sequence[str] | None = None,
 ) -> list[DocumentHit]:
@@ -118,7 +130,10 @@ async def _search(
         candidate_pool=top_k * _CANDIDATE_MULTIPLIER,
         keyword_terms=keyword_terms,
     )
-    return _group_into_documents(rows, top_k=top_k)
+    # The pool is sized by top_k; the document cut is fetch_k. Keeping them
+    # separate is what lets a reranking caller see the pool's whole document
+    # spread without asking the database for more chunks.
+    return _group_into_documents(rows, top_k=fetch_k or top_k)
 
 
 def _resolve_document_types(
