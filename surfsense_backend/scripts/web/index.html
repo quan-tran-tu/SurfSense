@@ -328,13 +328,6 @@
         <button id="addFolderBtn" class="sm">+ Add</button>
       </h2>
       <input id="folderPicker" type="file" webkitdirectory directory multiple class="hide">
-      <div class="opts" style="max-width:none;margin:6px 0 0">
-        <label>
-          <input type="checkbox" id="sessionScoped">
-          This session only
-          <span title="Off (the default): the folder is space-wide — every session retrieves it. On: only the session open at upload time sees it, until ⤴ promotes it.">ⓘ</span>
-        </label>
-      </div>
       <div id="folders"></div>
       <div id="ingest" class="hide">
         <div class="note" id="ingestMsg"></div>
@@ -402,11 +395,6 @@
           <button id="send" class="primary">Send</button>
         </div>
         <div class="opts">
-          <label>
-            <input type="checkbox" id="simpleRag" checked>
-            Retrieve then answer
-            <span title="On: the server searches the knowledge base itself and the model answers from those passages in one tool-free call — grounded even on small local models. Off: the full agent decides for itself whether to retrieve, and can also use web search, connectors and memory.">ⓘ</span>
-          </label>
           <button id="ctxToggle" class="link"
             title="Give the model facts your documents don't have yet — a changed role, a recent event. Kept for this session only, sent with every question and report, never added to the knowledge base.">Session context</button>
           <span id="ctx" class="mono"></span>
@@ -525,7 +513,6 @@ const state = {
   backend: "http://localhost:8000",
   email: "", password: "", apiKey: "",
   model: "deepseek-chat", modelBase: "https://api.deepseek.com/v1",
-  simpleRag: true,
   spaceId: null, threadId: null, threadTitle: "",
   lastReportId: null,   // most recent report in this thread; the default for /export and /revise
   isAdmin: false,       // is_superuser — gates the Admin panel (server also enforces it)
@@ -578,7 +565,6 @@ function savePrefs() {
     apiKey: INJECTED_KEY ? "" : state.apiKey,
     model: INJECTED_MODEL ? "" : state.model,
     modelBase: INJECTED_BASE ? "" : state.modelBase,
-    simpleRag: state.simpleRag,
     byUser,
   }));
 }
@@ -1064,12 +1050,10 @@ async function ingest(fileList) {
   const { root, files, paths } = collectFiles(fileList);
   if (!files.length) { toast("No indexable files in that folder.", "warn"); return; }
 
-  // Uploads are space-wide unless "this session only" is ticked: the backend
-  // scopes a folder to whichever thread_id we send (invisible to every other
-  // session until ⤴ promotes it), and we always have a session open —
-  // resumeSession() opens or creates one at boot — so sending it unconditionally
-  // would strand every upload in the session that happened to be open.
-  const threadId = $("#sessionScoped").checked ? (state.threadId ?? null) : null;
+  // Uploads are always space-wide. The backend would scope a folder to any
+  // thread_id we sent (invisible to every other session until ⤴ promotes it);
+  // the opt-in for that was removed from the page as more confusing than useful.
+  const threadId = null;
 
   // The KB label is the basename, never a full disk path: it becomes Folder.name,
   // which the agent sees as /documents/<name>/… — a full path would leak the
@@ -1393,7 +1377,9 @@ async function ask(question, opts = {}) {
         // The server retrieves first and answers in one tool-free call. The
         // rules that used to be smuggled into user_query now live in the
         // backend's simple_rag system prompt.
-        simple_rag: state.simpleRag,
+        // Always on: the page no longer offers the agent path, which confused
+        // more than it helped.
+        simple_rag: true,
         // Folder scope. The server treats these as @-folder pins and confines
         // retrieval to their subtrees, so "is there anything about X?" is
         // answered from these folders alone — and "nothing found" then means
@@ -1920,9 +1906,7 @@ function helpCommand() {
     "means nothing found there. The chip above the composer shows an active scope;",
     "✕ on it searches everything again.",
     "",
-    "Folders you upload are space-wide: every session can retrieve them. Tick",
-    "\"this session only\" before adding one to keep it private to this session;",
-    "⤴ in the Folders panel promotes such a folder back to space-wide.",
+    "Folders you upload are space-wide: every session can retrieve them.",
   ].join("\n"));
 }
 
@@ -2935,7 +2919,6 @@ function init() {
   $("#apiKey").value = state.apiKey;
   $("#model").value = state.model;
   $("#modelBase").value = state.modelBase;
-  $("#simpleRag").checked = state.simpleRag;
 
   // Whatever came from the server, don't ask for (and don't let it be edited).
   if (INJECTED_KEY) $("#apiKeyRow").classList.add("hide");
@@ -3070,8 +3053,6 @@ function init() {
     guard(() => importFolder(token));
   };
   $("#importToken").addEventListener("keydown", (e) => e.key === "Enter" && $("#importBtn").click());
-
-  $("#simpleRag").onchange = (e) => { state.simpleRag = e.target.checked; savePrefs(); };
 
   $("#scopeClear").onclick = () => guard(async () => {
     clearScope();
