@@ -142,6 +142,7 @@ async def stream_new_chat(
     auth_context: AuthContext | None = None,
     flow: Literal["new", "regenerate"] = "new",
     simple_rag: bool = False,
+    session_context: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream a new chat turn using the SurfSense deep agent.
 
@@ -464,6 +465,7 @@ async def stream_new_chat(
             filesystem_mode=fs_mode,
             request_id=request_id,
             turn_id=stream_result.turn_id,
+            session_context=session_context,
         )
         input_state = assembled.input_state
         accepted_folder_ids = assembled.accepted_folder_ids
@@ -726,6 +728,7 @@ async def stream_new_chat(
                 mentioned_folder_ids=accepted_folder_ids or None,
                 initial_step_id=initial_step_id,
                 initial_step_title=initial_step_title,
+                session_context=session_context,
             )
         else:
             turn_stream = run_stream_loop(

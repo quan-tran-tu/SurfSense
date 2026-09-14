@@ -1810,6 +1810,7 @@ async def handle_new_chat(
                 user_image_data_urls=image_urls,
                 auth_context=auth,
                 simple_rag=request.simple_rag,
+                session_context=request.session_context,
             ),
             media_type="text/event-stream",
             headers={

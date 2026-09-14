@@ -37,6 +37,7 @@ from app.agents.chat.runtime.referenced_chat_context import (
     render_referenced_chats_block,
     resolve_referenced_chats,
 )
+from app.agents.chat.shared.session_context import render_session_context_block
 from app.db import (
     ChatVisibility,
     NewChatThread,
@@ -79,6 +80,7 @@ async def build_new_chat_input_state(
     filesystem_mode: str,
     request_id: str | None,
     turn_id: str,
+    session_context: str | None = None,
 ) -> NewChatInputState:
     langchain_messages: list[Any] = []
 
@@ -135,6 +137,7 @@ async def build_new_chat_input_state(
         mentioned_connectors=mentioned_connectors,
         recent_reports=recent_reports,
         referenced_chat_context=referenced_chat_context,
+        session_context=render_session_context_block(session_context),
     )
 
     if thread_visibility == ChatVisibility.SEARCH_SPACE and current_user_display_name:
@@ -225,12 +228,15 @@ def _render_query_with_context(
     mentioned_connectors: list[dict[str, Any]] | None,
     recent_reports: list[Report],
     referenced_chat_context: str | None = None,
+    session_context: str | None = None,
 ) -> str:
-    """Prepend ``<mentioned_connectors>``, ``<report_context>``, then
-    ``<referenced_chat_context>`` blocks.
+    """Prepend ``<mentioned_connectors>``, ``<report_context>``,
+    ``<referenced_chat_context>``, then ``<session_context>`` blocks.
 
     Order of connectors then reports is load-bearing for legacy parity;
-    referenced chats are appended last as read-only background.
+    referenced chats are appended as read-only background. The user's session
+    note goes last, nearest the query it qualifies. ``session_context`` is the
+    already-rendered block.
     """
     context_parts: list[str] = []
 
@@ -259,6 +265,9 @@ def _render_query_with_context(
 
     if referenced_chat_context:
         context_parts.append(referenced_chat_context)
+
+    if session_context:
+        context_parts.append(session_context)
 
     if context_parts:
         context = "\n\n".join(context_parts)

@@ -1,7 +1,11 @@
 """API routes for folder CRUD, move, reorder, and document move operations."""
 
+from datetime import datetime
+from typing import Any, Literal
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import text
+from pydantic import BaseModel
+from sqlalchemy import func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -19,6 +23,12 @@ from app.schemas import (
     FolderUpdate,
 )
 from app.services.folder_scope_service import promote_folder_to_space
+from app.services.folder_sharing_service import (
+    get_admin_visible_roots,
+    get_linked_folder_ids,
+    is_folder_linked,
+    linked_folder_ids_subquery,
+)
 from app.services.folder_service import (
     check_no_circular_reference,
     dispatch_folder_deletion,
@@ -121,6 +131,189 @@ async def list_folders(
         raise HTTPException(
             status_code=500, detail=f"Failed to list folders: {e!s}"
         ) from e
+
+
+class FolderTreeNode(BaseModel):
+    id: int
+    name: str
+    # None at every mount root. For a foreign folder the real parent lives in a
+    # space this one cannot read, so it is cleared rather than left dangling.
+    parent_id: int | None
+    owner_thread_id: int | None = None
+    # own: this space's folder. linked: read through a share link. user: a
+    # non-admin user's folder, read by a system admin.
+    origin: Literal["own", "linked", "user"]
+    owner_email: str | None = None  # set when origin == "user"
+    document_count: int = 0  # documents directly inside, not the whole subtree
+
+
+class FolderDocumentRead(BaseModel):
+    id: int
+    title: str
+    document_type: str
+    status: dict[str, Any] | None = None
+    updated_at: datetime | None = None
+
+
+@router.get(
+    "/search-spaces/{search_space_id}/folder-tree",
+    response_model=list[FolderTreeNode],
+)
+async def get_folder_tree(
+    search_space_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Every folder this space can read, flat, for the client to nest by ``parent_id``.
+
+    The space's own folders, the subtrees it holds a live share link to, and —
+    for a system admin — every non-admin user's space-wide folders. The foreign
+    part is exactly ``linked_folder_ids_subquery``, the grant retrieval uses, so
+    the tree never shows a folder a question can't read or hides one it can.
+    Requires DOCUMENTS_READ.
+    """
+    await check_permission(
+        session,
+        auth,
+        search_space_id,
+        Permission.DOCUMENTS_READ.value,
+        "You don't have permission to read folders in this search space",
+    )
+
+    own = (
+        (
+            await session.execute(
+                select(Folder).where(Folder.search_space_id == search_space_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    foreign_ids = set(await get_linked_folder_ids(session, search_space_id))
+    foreign = (
+        (await session.execute(select(Folder).where(Folder.id.in_(foreign_ids))))
+        .scalars()
+        .all()
+        if foreign_ids
+        else []
+    )
+    user_roots = {
+        folder.id: email
+        for folder, email in await get_admin_visible_roots(session, search_space_id)
+    }
+
+    counts = dict(
+        (
+            await session.execute(
+                select(Document.folder_id, func.count(Document.id))
+                .where(
+                    or_(
+                        Document.search_space_id == search_space_id,
+                        Document.folder_id.in_(
+                            linked_folder_ids_subquery(search_space_id)
+                        ),
+                    ),
+                    Document.folder_id.is_not(None),
+                    func.coalesce(Document.status["state"].astext, "ready")
+                    != "deleting",
+                )
+                .group_by(Document.folder_id)
+            )
+        ).all()
+    )
+
+    nodes = [
+        FolderTreeNode(
+            id=f.id,
+            name=f.name,
+            parent_id=f.parent_id,
+            owner_thread_id=f.owner_thread_id,
+            origin="own",
+            document_count=counts.get(f.id, 0),
+        )
+        for f in own
+    ]
+
+    by_id = {f.id: f for f in foreign}
+
+    def mount_root(folder: Folder) -> Folder:
+        seen: set[int] = set()
+        while folder.parent_id in by_id and folder.id not in seen:
+            seen.add(folder.id)
+            folder = by_id[folder.parent_id]
+        return folder
+
+    for f in foreign:
+        owner_email = user_roots.get(mount_root(f).id)
+        nodes.append(
+            FolderTreeNode(
+                id=f.id,
+                name=f.name,
+                parent_id=f.parent_id if f.parent_id in by_id else None,
+                owner_thread_id=f.owner_thread_id,
+                origin="user" if owner_email else "linked",
+                owner_email=owner_email,
+                document_count=counts.get(f.id, 0),
+            )
+        )
+    return nodes
+
+
+@router.get(
+    "/search-spaces/{search_space_id}/folders/{folder_id}/documents",
+    response_model=list[FolderDocumentRead],
+)
+async def list_folder_documents(
+    search_space_id: int,
+    folder_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Documents directly inside one folder of ``folder-tree``. Requires DOCUMENTS_READ.
+
+    Answers for exactly the folders the tree lists — owned by this space, or read
+    through a link or an admin's view. Anything else is a 404, so the route can't
+    be used to probe other spaces' folder ids.
+    """
+    await check_permission(
+        session,
+        auth,
+        search_space_id,
+        Permission.DOCUMENTS_READ.value,
+        "You don't have permission to read documents in this search space",
+    )
+
+    folder = await session.get(Folder, folder_id)
+    readable = folder is not None and (
+        folder.search_space_id == search_space_id
+        or await is_folder_linked(session, search_space_id, folder_id)
+    )
+    if not readable:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    rows = (
+        await session.execute(
+            select(
+                Document.id,
+                Document.title,
+                Document.document_type,
+                Document.status,
+                Document.updated_at,
+            )
+            .where(Document.folder_id == folder_id)
+            .order_by(Document.title)
+        )
+    ).all()
+    return [
+        FolderDocumentRead(
+            id=row.id,
+            title=row.title or "untitled",
+            document_type=str(getattr(row.document_type, "value", row.document_type)),
+            status=row.status,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/folders/{folder_id}", response_model=FolderRead)

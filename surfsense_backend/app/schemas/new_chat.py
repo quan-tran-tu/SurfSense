@@ -299,6 +299,17 @@ class NewChatRequest(BaseModel):
             "search, connectors, memory or document writes on this turn."
         ),
     )
+    session_context: str | None = Field(
+        default=None,
+        max_length=8000,
+        description=(
+            "Facts the user supplied for this chat session — e.g. an official's "
+            "new position — that the answer must treat as true and more current "
+            "than the knowledge base. Rendered as a ``<session_context>`` block "
+            "on this turn only; never persisted server-side. The client resends "
+            "it with every turn of the session."
+        ),
+    )
     filesystem_mode: Literal["cloud", "desktop_local_folder"] = "cloud"
     client_platform: Literal["web", "desktop"] = "web"
     local_filesystem_mounts: list[LocalFilesystemMountPayload] | None = None

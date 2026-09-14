@@ -18,7 +18,8 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi_users.exceptions import InvalidPasswordException, UserAlreadyExists
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,7 @@ from sqlalchemy.orm import aliased
 
 from app.auth.context import AuthContext
 from app.db import (
+    Document,
     Folder,
     FolderLink,
     SearchSpace,
@@ -33,8 +35,9 @@ from app.db import (
     User,
     get_async_session,
 )
+from app.schemas.users import UserCreate
 from app.services.folder_service import dispatch_folder_deletion
-from app.users import require_admin
+from app.users import UserManager, get_user_manager, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +50,32 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 class AdminUserRead(BaseModel):
     id: str
     email: str
+    display_name: str | None = None
     is_active: bool
     is_superuser: bool
     is_verified: bool
     last_login: datetime | None = None
     search_space_count: int = 0
+    folder_count: int = 0
+    document_count: int = 0
+
+
+class AdminUserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8)
+    display_name: str | None = Field(default=None, max_length=255)
+    is_superuser: bool = False
 
 
 class AdminUserUpdate(BaseModel):
     is_active: bool | None = None
     is_superuser: bool | None = None
+    # An empty string clears the name.
+    display_name: str | None = Field(default=None, max_length=255)
+
+
+class AdminPasswordReset(BaseModel):
+    password: str = Field(min_length=8)
 
 
 class AdminFolderRead(BaseModel):
@@ -103,16 +122,55 @@ class AdminLinkRead(BaseModel):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _user_read(user: User, space_count: int) -> AdminUserRead:
+def _count_columns(owner_id):
+    """Spaces, folders and documents owned by ``owner_id``, as scalar subqueries.
+
+    Scalar subqueries rather than join+group_by: under GOOGLE auth ``User`` eager-
+    loads ``oauth_accounts`` (lazy="joined"), and a grouped join would multiply
+    every count by the number of oauth rows. ``owner_id`` is either ``User.id``
+    (correlated, for the list) or a literal id (for one user).
+    """
+    spaces = select(func.count(SearchSpace.id)).where(SearchSpace.user_id == owner_id)
+    folders = (
+        select(func.count(Folder.id))
+        .select_from(Folder)
+        .join(SearchSpace, SearchSpace.id == Folder.search_space_id)
+        .where(SearchSpace.user_id == owner_id)
+    )
+    documents = (
+        select(func.count(Document.id))
+        .select_from(Document)
+        .join(SearchSpace, SearchSpace.id == Document.search_space_id)
+        .where(SearchSpace.user_id == owner_id)
+    )
+    return [
+        q.correlate_except(SearchSpace, Folder, Document).scalar_subquery()
+        for q in (spaces, folders, documents)
+    ]
+
+
+def _user_read(
+    user: User, spaces: int, folders: int = 0, documents: int = 0
+) -> AdminUserRead:
     return AdminUserRead(
         id=str(user.id),
         email=user.email,
+        display_name=getattr(user, "display_name", None),
         is_active=bool(user.is_active),
         is_superuser=bool(user.is_superuser),
         is_verified=bool(user.is_verified),
         last_login=getattr(user, "last_login", None),
-        search_space_count=space_count,
+        search_space_count=spaces,
+        folder_count=folders,
+        document_count=documents,
     )
+
+
+async def _read_user(session: AsyncSession, user: User) -> AdminUserRead:
+    spaces, folders, documents = (
+        await session.execute(select(*_count_columns(user.id)))
+    ).one()
+    return _user_read(user, spaces, folders, documents)
 
 
 async def _count_admins(session: AsyncSession) -> int:
@@ -133,22 +191,59 @@ async def list_users(
     session: AsyncSession = Depends(get_async_session),
     _: AuthContext = Depends(require_admin),
 ):
-    """Every user, with a count of the search spaces they own."""
-    # Scalar subquery rather than join+group_by: under GOOGLE auth ``User`` eager-
-    # loads ``oauth_accounts`` (lazy="joined"), and a grouped join would multiply
-    # the space count by the number of oauth rows. This stays correct either way.
-    space_count = (
-        select(func.count(SearchSpace.id))
-        .where(SearchSpace.user_id == User.id)
-        .correlate(User)
-        .scalar_subquery()
-    )
+    """Every user, with counts of the spaces, folders and documents they own."""
     rows = (
-        await session.execute(
-            select(User, space_count).order_by(User.email)
-        )
+        await session.execute(select(User, *_count_columns(User.id)).order_by(User.email))
     ).all()
-    return [_user_read(user, count) for user, count in rows]
+    return [
+        _user_read(user, spaces, folders, documents)
+        for user, spaces, folders, documents in rows
+    ]
+
+
+@router.post("/users", response_model=AdminUserRead, status_code=201)
+async def create_user(
+    body: AdminUserCreate,
+    session: AsyncSession = Depends(get_async_session),
+    user_manager: UserManager = Depends(get_user_manager),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Create an account on someone's behalf — the way in when registration is off.
+
+    Goes through the user manager, so the password is hashed exactly as on
+    self-registration and ``on_after_register`` seeds the default search space.
+    The account is created verified; ``safe=False`` is what lets an admin set
+    ``is_superuser`` at creation.
+    """
+    try:
+        user = await user_manager.create(
+            UserCreate(
+                email=body.email,
+                password=body.password,
+                is_superuser=body.is_superuser,
+                is_verified=True,
+            ),
+            safe=False,
+        )
+    except UserAlreadyExists as err:
+        raise HTTPException(
+            status_code=409, detail="A user with this email already exists"
+        ) from err
+    except InvalidPasswordException as err:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid password: {err.reason}"
+        ) from err
+
+    if body.display_name and body.display_name.strip():
+        user = await user_manager.user_db.update(
+            user, {"display_name": body.display_name.strip()}
+        )
+
+    logger.info(
+        f"Admin {auth.user.email} created user {user.email}"
+        + (" (admin)" if body.is_superuser else "")
+    )
+    return await _read_user(session, user)
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserRead)
@@ -158,7 +253,7 @@ async def update_user(
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(require_admin),
 ):
-    """Activate/deactivate a user, or grant/revoke system-admin.
+    """Activate/deactivate a user, grant/revoke system-admin, or rename them.
 
     Guards against self-lockout: an admin cannot strip their own admin or
     deactivate themselves, and the last active admin cannot be demoted at all.
@@ -191,15 +286,43 @@ async def update_user(
         user.is_active = body.is_active
     if body.is_superuser is not None:
         user.is_superuser = body.is_superuser
+    if body.display_name is not None:
+        user.display_name = body.display_name.strip() or None
     await session.commit()
     await session.refresh(user)
+    return await _read_user(session, user)
 
-    count = (
-        await session.execute(
-            select(func.count(SearchSpace.id)).filter(SearchSpace.user_id == user.id)
-        )
-    ).scalar_one()
-    return _user_read(user, count)
+
+@router.post("/users/{user_id}/password")
+async def reset_user_password(
+    user_id: uuid.UUID,
+    body: AdminPasswordReset,
+    session: AsyncSession = Depends(get_async_session),
+    user_manager: UserManager = Depends(get_user_manager),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Set a new password for a user; they sign in with it from now on.
+
+    Sessions already issued are not ended: access tokens are stateless JWTs that
+    run to expiry. To lock someone out *now*, deactivate the account too —
+    ``get_auth_context`` rejects inactive users on every request.
+    """
+    user = await session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        await user_manager.validate_password(body.password, user)
+    except InvalidPasswordException as err:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid password: {err.reason}"
+        ) from err
+
+    user.hashed_password = user_manager.password_helper.hash(body.password)
+    email = user.email
+    await session.commit()
+    logger.info(f"Admin {auth.user.email} reset the password of {email}")
+    return {"message": f"Password updated for {email}"}
 
 
 @router.delete("/users/{user_id}")

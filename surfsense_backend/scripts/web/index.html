@@ -180,26 +180,84 @@
     border-radius: 0 6px 6px 0; padding: 8px 12px;
   }
 
-  /* ---- admin overlay ---- */
+  /* ---- folder tree ---- */
+  .item .caret { width: 12px; flex: none; color: var(--muted); font-size: 10px; text-align: center; }
+  .item .count { flex: none; color: var(--muted); font-size: 11px; }
+  .item.file { color: var(--muted); cursor: pointer; }
+  .item.file:hover { color: var(--fg); }
+  .item.group > .name { font-weight: 600; }
+  .item .badge { flex: none; }
+
+  /* ---- session context ---- */
+  .scopebar.ctx { color: var(--warn); border-color: var(--warn); }
+  .ctxpanel { margin-bottom: 8px; }
+  .ctxpanel textarea { resize: vertical; min-height: 84px; max-height: 260px; }
+  .ctxpanel .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  .ctxpanel .row .note { flex: 1; margin: 0; }
+  .opts button.link { background: none; border: none; padding: 0; color: var(--muted); font-size: 12px; }
+  .opts button.link:hover:not(:disabled) { color: var(--fg); }
+  .opts button.link.on { color: var(--warn); }
+
+  /* ---- admin page ---- */
   #adminBtn { margin-top: 8px; width: 100%; }
-  .overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
-    display: flex; align-items: center; justify-content: center; padding: 24px;
+  #adminView {
+    position: fixed; inset: 0; z-index: 40; background: var(--bg);
+    display: flex; flex-direction: column;
   }
-  .overlay .panel {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-    width: 900px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column;
+  .abar {
+    display: flex; align-items: center; gap: 10px; padding: 10px 20px; flex-wrap: wrap;
+    background: var(--panel); border-bottom: 1px solid var(--line);
   }
-  .overlay header {
-    padding: 12px 16px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: center; gap: 8px;
-  }
-  .overlay header .t { flex: 1; font-size: 15px; font-weight: 600; }
-  .overlay .body { overflow-y: auto; padding: 8px 16px 16px; }
-  .overlay .body h3 {
+  .abar .t { font-size: 15px; font-weight: 600; margin-right: 10px; }
+  .grow { flex: 1; }
+  .tabs { display: flex; gap: 4px; }
+  .tabs button { background: transparent; border-color: transparent; }
+  .tabs button.on { background: var(--panel-2); border-color: var(--line); }
+  .acontent { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 16px 20px; }
+  .apane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .apane.scroll { overflow-y: auto; }
+  .apane h3, .udetail h3 {
     font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
     margin: 18px 0 8px;
   }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .toolbar input { width: 260px; }
+  .toolbar select { width: auto; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 12px 14px; margin-bottom: 12px;
+  }
+  .card h4 { margin: 0; font-size: 13px; }
+  .fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 12px; align-items: end; }
+  .check { display: flex; gap: 6px; align-items: center; margin: 10px 0 8px; font-size: 13px; color: var(--fg); cursor: pointer; }
+  .check input { width: auto; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .asplit { flex: 1; min-height: 0; display: flex; gap: 16px; }
+  .tablewrap {
+    flex: 1; min-width: 0; overflow: auto; background: var(--panel);
+    border: 1px solid var(--line); border-radius: var(--radius);
+  }
+  table.utable { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .utable th {
+    position: sticky; top: 0; background: var(--panel-2); color: var(--muted);
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+    text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  .utable th[data-dir]::after { content: attr(data-dir); margin-left: 4px; }
+  .utable td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .utable tbody tr { cursor: pointer; }
+  .utable tbody tr:hover { background: var(--panel-2); }
+  .utable tbody tr.sel { background: rgba(76, 141, 255, .14); }
+  .utable .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .udetail {
+    width: 400px; flex: none; overflow-y: auto; background: var(--panel);
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px;
+  }
+  .udetail > header { display: flex; align-items: flex-start; gap: 8px; }
+  .udetail > header .grow { min-width: 0; overflow-wrap: anywhere; }
+  .udetail .dangerzone { border: 1px solid var(--err); border-radius: var(--radius); padding: 10px 12px; }
   .arow {
     display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px;
     border-bottom: 1px solid var(--line); font-size: 13px; flex-wrap: wrap;
@@ -323,6 +381,22 @@
           <span class="txt"></span>
           <button id="scopeClear" class="sm" title="Search the whole space again.">✕</button>
         </div>
+        <!-- Like the scope, a session note silently changes every answer, so it
+             is announced above the input whenever one is set. -->
+        <div id="ctxBar" class="scopebar ctx hide">
+          <span class="txt"></span>
+          <button id="ctxEdit" class="sm">Edit</button>
+        </div>
+        <div id="ctxPanel" class="ctxpanel hide">
+          <textarea id="ctxText" rows="4" maxlength="8000"
+            placeholder="Facts every answer in this session should take as true — e.g. “Since 08/2026, Nguyễn Văn A is Minister of Finance (no longer Deputy Minister).” Newer than your documents: where they disagree, this wins."></textarea>
+          <div class="row">
+            <span class="note" id="ctxCount"></span>
+            <button id="ctxClear" class="sm danger">Clear</button>
+            <button id="ctxCancel" class="sm">Close</button>
+            <button id="ctxSave" class="sm primary">Save</button>
+          </div>
+        </div>
         <div class="box">
           <textarea id="q" rows="1" placeholder="Ask your knowledge base…  (/help for commands · Enter to send, Shift+Enter for a newline)"></textarea>
           <button id="send" class="primary">Send</button>
@@ -333,6 +407,8 @@
             Retrieve then answer
             <span title="On: the server searches the knowledge base itself and the model answers from those passages in one tool-free call — grounded even on small local models. Off: the full agent decides for itself whether to retrieve, and can also use web search, connectors and memory.">ⓘ</span>
           </label>
+          <button id="ctxToggle" class="link"
+            title="Give the model facts your documents don't have yet — a changed role, a recent event. Kept for this session only, sent with every question and report, never added to the knowledge base.">Session context</button>
           <span id="ctx" class="mono"></span>
         </div>
       </div>
@@ -349,21 +425,74 @@
 </div>
 
 <!-- ===================== admin (superusers only) ===================== -->
-<div id="admin" class="overlay hide">
-  <div class="panel">
-    <header>
-      <span class="t">System admin</span>
-      <button id="adminRefresh" class="sm">Refresh</button>
-      <button id="adminClose" class="sm">✕</button>
-    </header>
-    <div class="body">
-      <h3>Users</h3>
-      <div id="adminUsers"></div>
+<div id="adminView" class="hide">
+  <header class="abar">
+    <span class="t">System admin</span>
+    <nav class="tabs">
+      <button data-tab="users" class="on">Users</button>
+      <button data-tab="shares">Folder shares</button>
+      <button data-tab="links">Imported links</button>
+    </nav>
+    <span class="grow"></span>
+    <button id="adminRefresh" class="sm">Refresh</button>
+    <button id="adminClose" class="sm">← Back to chat</button>
+  </header>
+  <div class="acontent">
+    <section id="tab-users" class="apane">
+      <div class="toolbar">
+        <input id="userSearch" placeholder="Search by email or name…">
+        <select id="userRole">
+          <option value="">All roles</option>
+          <option value="admin">Admins</option>
+          <option value="user">Users</option>
+        </select>
+        <select id="userStatus">
+          <option value="">Any status</option>
+          <option value="active">Active</option>
+          <option value="inactive">Deactivated</option>
+        </select>
+        <span id="userSummary" class="sub grow"></span>
+        <button id="newUserBtn" class="primary sm">+ New user</button>
+      </div>
+      <form id="newUserForm" class="card hide" autocomplete="off">
+        <h4>New user</h4>
+        <div class="fgrid">
+          <div><label for="nuEmail">Email</label><input id="nuEmail" type="email" required></div>
+          <div><label for="nuName">Display name (optional)</label><input id="nuName"></div>
+          <div><label for="nuPassword">Password (min. 8 characters)</label>
+            <input id="nuPassword" type="password" minlength="8" required autocomplete="new-password"></div>
+          <label class="check"><input id="nuAdmin" type="checkbox"> System admin</label>
+        </div>
+        <div class="actions">
+          <button type="submit" class="primary sm">Create user</button>
+          <button type="button" id="nuCancel" class="sm">Cancel</button>
+        </div>
+      </form>
+      <div class="asplit">
+        <div class="tablewrap">
+          <table class="utable">
+            <thead><tr>
+              <th data-sort="email">User</th>
+              <th data-sort="is_superuser">Role</th>
+              <th data-sort="is_active">Status</th>
+              <th data-sort="last_login">Last sign-in</th>
+              <th data-sort="folder_count" class="num">Folders</th>
+              <th data-sort="document_count" class="num">Documents</th>
+            </tr></thead>
+            <tbody id="userRows"></tbody>
+          </table>
+        </div>
+        <aside id="userDetail" class="udetail hide"></aside>
+      </div>
+    </section>
+    <section id="tab-shares" class="apane scroll hide">
       <h3>Folder shares — hard-revoke removes the folder from every importer</h3>
       <div id="adminShares"></div>
+    </section>
+    <section id="tab-links" class="apane scroll hide">
       <h3>Imported links</h3>
       <div id="adminLinks"></div>
-    </div>
+    </section>
   </div>
 </div>
 
@@ -408,6 +537,10 @@ const state = {
   // where the server matches each id's whole subtree.
   scopeFolderIds: [],
   scopeNames: {},   // folder id -> name, so the chip can be labelled without a refetch
+  // thread id -> the user's note for that session: facts the answers must take
+  // as true (a changed role, a recent event). Sent as session_context with every
+  // question and folded into every report; never written to the knowledge base.
+  sessionNotes: {},
 };
 
 const readPrefs = () => {
@@ -433,6 +566,8 @@ function savePrefs() {
       // Folder ids belong to one user's space, so they live in the per-user slice.
       scopeFolderIds: state.scopeFolderIds,
       scopeNames: state.scopeNames,
+      // Thread ids are per user too, and a note can name people under inquiry.
+      sessionNotes: state.sessionNotes,
     };
   }
   localStorage.setItem(LS, JSON.stringify({
@@ -457,6 +592,7 @@ function adoptUser(email) {
   state.templates = mine.templates ?? [];
   state.scopeFolderIds = mine.scopeFolderIds ?? [];
   state.scopeNames = mine.scopeNames ?? {};
+  state.sessionNotes = mine.sessionNotes ?? {};
 }
 
 function loadPrefs() {
@@ -800,13 +936,6 @@ function setScope(ids, namesById = {}) {
   renderScope();
 }
 
-function toggleScope(id, name, on) {
-  const ids = state.scopeFolderIds.filter((x) => x !== id);
-  const names = { ...state.scopeNames, [id]: name };
-  if (on) ids.push(id);
-  setScope(ids, names);
-}
-
 function clearScope() {
   setScope([]);
 }
@@ -838,6 +967,9 @@ function renderScope() {
         ? ` — ${stranded.length} of them belongs to another session and answers nothing here`
         : "");
   }
+  // One scope, several checkboxes for it (a folder, the user above it, its row
+  // under Imported): repaint them all from the scope instead of re-fetching.
+  syncPicks();
 }
 
 const MAX_FILE_BYTES = 500 * 1024 * 1024;
@@ -1048,6 +1180,7 @@ async function importFolder(token) {
     json: { token },
   });
   toast(`Imported "${folder_name}" — it is searchable now, and readable (read-only) at /documents/_shared/${folder_name}.`, "ok", 10000);
+  await renderFolders();   // the imports panel expands from the folder tree
   await renderImports();
 }
 
@@ -1055,6 +1188,7 @@ async function importFolder(token) {
 async function removeImport(link) {
   await api("DELETE", `/api/v1/folder-links/${link.id}`);
   toast(`Removed "${link.folder_name}" — it is no longer searchable here. The owner's copy is untouched.`);
+  await renderFolders();
   await renderImports();
 }
 
@@ -1265,6 +1399,10 @@ async function ask(question, opts = {}) {
         // answered from these folders alone — and "nothing found" then means
         // nothing found *here*, which is the question being asked.
         mentioned_folder_ids: state.scopeFolderIds.length ? state.scopeFolderIds : undefined,
+        // The session's note. The server keeps nothing between turns, so it
+        // rides along every time — which is also what makes Clear take effect
+        // on the very next question.
+        session_context: sessionContext() || undefined,
       },
     });
 
@@ -1415,6 +1553,7 @@ async function runCommand(line) {
     case "/revise":    return reviseCommand(arg);
     case "/export":    return exportCommand(arg);
     case "/scope":     return scopeCommand(arg);
+    case "/context":   return contextCommand(arg);
     case "/reports":   return listReportsCommand();
     case "/templates": return listTemplatesCommand();
     case "/help":      return helpCommand();
@@ -1438,7 +1577,15 @@ async function runCommand(line) {
  */
 function buildReportInstructions(request, tpl = null) {
   const base = "Viết báo cáo bằng tiếng Việt.";
-  const ask = request.trim() ? `\n\nYêu cầu của người dùng:\n${request.trim()}` : "";
+  // The session note travels here rather than as session_context: the report
+  // pipeline is not a chat turn, and user_instructions is its only way into the
+  // writer's prompt.
+  const note = sessionContext();
+  const ask = (request.trim() ? `\n\nYêu cầu của người dùng:\n${request.trim()}` : "") +
+    (note
+      ? "\n\nThông tin bổ sung người dùng cung cấp cho phiên làm việc này — coi là đúng " +
+        "và mới hơn tài liệu; nếu tài liệu mâu thuẫn thì tài liệu đã lỗi thời:\n" + note
+      : "");
   if (!tpl) return base + ask;
 
   // The outline block is omitted when no headings were detected: an empty
@@ -1639,18 +1786,13 @@ function triggerDownload(blob, filename) {
  *   /scope all       drop the scope and search the whole space again
  */
 async function scopeCommand(arg) {
-  const [folders, links] = await Promise.all([watchedFolders(), listImports()]);
-  const candidates = [
-    ...(folders ?? []).map((f) => ({
-      id: f.id,
-      name: f.name,
-      // Hidden from retrieval in this session, so it could only scope to nothing.
-      other: f.owner_thread_id != null && f.owner_thread_id !== state.threadId,
-    })),
-    ...(links ?? []).map((l) => ({
-      id: l.source_folder_id, name: `${l.folder_name} (imported)`, other: false,
-    })),
-  ];
+  // The tree is the list of everything a scope can name: own, imported and — for
+  // an admin — every user's folders, subfolders included (the server matches
+  // each id's subtree, so a subfolder narrows as well as a root does).
+  await renderFolders();
+  const byId = new Map(treeNodes.map((n) => [n.id, n]));
+  // Hidden from retrieval in this session, so it could only scope to nothing.
+  const other = (n) => n.owner_thread_id != null && n.owner_thread_id !== state.threadId;
   const want = arg.trim().toLowerCase();
 
   if (["all", "none", "off", "clear"].includes(want)) {
@@ -1663,31 +1805,33 @@ async function scopeCommand(arg) {
     const ids = want.split(/[\s,]+/).filter(Boolean).map(Number);
     // An id that names no folder would scope the search to nothing and read as
     // "nothing found", so reject it here instead of answering from an empty set.
-    const bad = ids.filter((id) =>
-      !Number.isInteger(id) || !candidates.some((c) => c.id === id));
+    const bad = ids.filter((id) => !Number.isInteger(id) || !byId.has(id));
     if (bad.length) {
       toast(`No folder with id ${bad.join(", ")}. /scope lists what you have.`, "warn");
       return;
     }
-    const elsewhere = ids.filter((id) => candidates.find((c) => c.id === id)?.other);
+    const elsewhere = ids.filter((id) => other(byId.get(id)));
     if (elsewhere.length) {
       toast(`Folder ${elsewhere.join(", ")} belongs to another session and can't ` +
         "answer here. Promote it (⤴) first, or pick another.", "warn", 10000);
       return;
     }
-    setScope(ids, Object.fromEntries(candidates.map((c) => [c.id, c.name])));
-    await renderFolders();
-    await renderImports();
+    setScope(ids, Object.fromEntries(ids.map((id) => [id, folderLabel(byId.get(id))])));
   }
 
+  // List the roots, plus any subfolder already in scope; the sidebar tree shows the rest.
+  const candidates = treeNodes
+    .filter((n) => n.parent_id == null || inScope(n.id))
+    .sort((a, b) => ORIGIN_ORDER[a.origin] - ORIGIN_ORDER[b.origin] ||
+                    folderLabel(a).localeCompare(folderLabel(b)));
   if (!candidates.length) {
     addSystemNote("No folders indexed yet — nothing to scope to.");
     return;
   }
   addSystemNote("Question scope:\n" +
-    candidates.map((c) =>
-      `  ${inScope(c.id) ? "[x]" : "[ ]"} #${c.id} — ${c.name}` +
-      (c.other ? "   (another session's — unusable here)" : "")).join("\n") +
+    candidates.map((n) =>
+      `  ${inScope(n.id) ? "[x]" : "[ ]"} #${n.id} — ${folderLabel(n)}` +
+      (other(n) ? "   (another session's — unusable here)" : "")).join("\n") +
     (state.scopeFolderIds.length
       ? `\n\nQuestions and reports use those ${state.scopeFolderIds.length} folder(s) only` +
         " — everything below them included. /scope all clears it."
@@ -1717,6 +1861,42 @@ async function listTemplatesCommand() {
     "\n\nUse one: /report t<id> <what the report should cover>");
 }
 
+/**
+ * Show, extend or clear the session's note from the composer — the keyboard path
+ * to the "Session context" panel.
+ *
+ *   /context             show it
+ *   /context <facts>     add a line to it
+ *   /context clear       remove it
+ */
+function contextCommand(arg) {
+  const text = arg.trim();
+  const current = sessionContext();
+
+  if (!text) {
+    addSystemNote(current
+      ? `Session context (sent with every question and report in this session):\n\n${current}\n\n` +
+        "/context <facts> adds a line · /context clear removes it"
+      : "No session context. Add facts your documents don't have yet, e.g.\n" +
+        "  /context Since 08/2026, Nguyễn Văn A is Minister of Finance.");
+    return;
+  }
+  if (text.toLowerCase() === "clear") {
+    setSessionContext("");
+    addSystemNote("Session context cleared — answers rely on the documents alone again.");
+    return;
+  }
+
+  const next = current ? `${current}\n${text}` : text;
+  if (next.length > SESSION_CONTEXT_MAX) {
+    toast(`Session context is limited to ${SESSION_CONTEXT_MAX} characters. ` +
+      "Edit it in the Session context panel to make room.", "warn", 9000);
+    return;
+  }
+  setSessionContext(next);
+  addSystemNote(`Added to this session's context:\n${text}`);
+}
+
 function helpCommand() {
   addSystemNote([
     "Chat commands:",
@@ -1728,6 +1908,8 @@ function helpCommand() {
     "  /templates               list your uploaded report templates",
     "  /scope [ids|all]         ask only inside chosen folders — /scope lists them,",
     "                           /scope 3,5 narrows to two, /scope all clears it",
+    "  /context [facts|clear]   tell the model facts your documents don't have yet",
+    "                           (a changed role, a recent event) — this session only",
     "  /help                    show this",
     "",
     "Anything without a leading / is asked against your knowledge base.",
@@ -1852,6 +2034,32 @@ async function openCitation(chunkId, chip) {
   }
 }
 
+/**
+ * Show a document picked in the folder tree, in the same panel a citation opens:
+ * it answers the same question — "what does this file say?" — reached from the
+ * tree instead of from an answer. The server falls back to the link grant, so a
+ * file in an imported folder, or an admin's view of a user's, opens too.
+ */
+async function openDocument(doc) {
+  document.querySelectorAll("a.cite.on").forEach((a) => a.classList.remove("on"));
+  const panel = $("#cite"), title = $("#citeTitle"), body = $("#citeBody");
+  panel.classList.add("on");
+  title.textContent = doc.title;
+  body.textContent = "Loading…";
+
+  try {
+    const full = await apiJson("GET", `/api/v1/documents/${doc.id}`);
+    const div = document.createElement("div");
+    div.className = "chunk hit";
+    div.textContent = full?.content?.trim() || "No text was extracted from this document.";
+    body.replaceChildren(div);
+  } catch (e) {
+    body.textContent = e.status === 404
+      ? "That document is gone — it was probably deleted or re-indexed."
+      : `Could not load the document: ${e.message}`;
+  }
+}
+
 function addMessage(role, text, streaming = false) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
@@ -1925,7 +2133,10 @@ async function deleteSession(thread) {
   await api("DELETE", `/api/v1/threads/${thread.id}`);
   toast(`Deleted session "${thread.title}".`);
 
+  // The note belonged to that session; don't leave it behind in the prefs.
+  delete state.sessionNotes[thread.id];
   if (thread.id === state.threadId) state.threadId = null;
+  savePrefs();
   await resumeSession();
 }
 
@@ -1935,68 +2146,237 @@ async function promoteFolder(f) {
   await renderFolders();
 }
 
+/* ------------------------------------------------------------ folder tree */
+//
+// One tree for everything a question can read: the space's own folders and —
+// for a system admin — every non-admin user's folders, each user shown as one
+// more folder holding theirs. Imported folders expand the same way under
+// Imported. The server builds the list from the grant retrieval uses, so the
+// tree can't show a folder a question can't read, or hide one it can.
+//
+// Folders arrive in one request. A folder's files are fetched when it is first
+// opened: a large upload is thousands of rows nobody asked to see.
+
+let treeNodes = [];              // FolderTreeNode[] from /folder-tree
+const openNodes = new Set();     // keys of expanded rows, kept across re-renders
+const docCache = new Map();      // folder id -> its documents; dropped on every reload
+
+const ORIGIN_ORDER = { own: 0, linked: 1, user: 2 };
+
+/** How a folder is named outside the tree — in the scope chip and in /scope. */
+const folderLabel = (n) =>
+  n.origin === "user" ? `${n.owner_email}/${n.name}`
+  : n.origin === "linked" ? `${n.name} (imported)`
+  : n.name;
+
+const byName = (a, b) => a.name.localeCompare(b.name);
+
+const loadTree = () =>
+  apiJson("GET", `/api/v1/search-spaces/${state.spaceId}/folder-tree`);
+
+async function folderDocs(folderId) {
+  if (!docCache.has(folderId)) {
+    docCache.set(folderId, await apiJson("GET",
+      `/api/v1/search-spaces/${state.spaceId}/folders/${folderId}/documents`) ?? []);
+  }
+  return docCache.get(folderId);
+}
+
+function mk(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+const indent = (depth, extra = 0) => `${8 + depth * 14 + extra}px`;
+
+/** A row button that acts without also toggling the row it sits in. */
+function actionBtn(label, cls, title, onClick) {
+  const b = mk("button", `sm act ${cls}`.trim(), label);
+  if (title) b.title = title;
+  b.onclick = (e) => { e.stopPropagation(); onClick(); };
+  return b;
+}
+
+/**
+ * A row that expands. `children()` runs on first open and returns the elements
+ * to show beneath it. Callers add a checkbox, badges and buttons to `row`; each
+ * must stop propagation, or clicking it would also toggle the row.
+ */
+function treeRow({ key, depth, name, count, children }) {
+  const wrap = mk("div");
+  const row = mk("div", "item");
+  row.style.paddingLeft = indent(depth);
+  const caret = mk("span", "caret", "▸");
+  const label = mk("span", "name", name);
+  row.append(caret, label);
+  if (count) row.append(mk("span", "count", String(count)));
+  const kids = mk("div", "hide");
+  wrap.append(row, kids);
+
+  const note = (text) => {
+    const n = mk("div", "empty", text);
+    n.style.paddingLeft = indent(depth + 1, 18);
+    return n;
+  };
+  let loaded = false;
+  const setOpen = async (open) => {
+    caret.textContent = open ? "▾" : "▸";
+    kids.classList.toggle("hide", !open);
+    if (open) openNodes.add(key); else openNodes.delete(key);
+    if (!open || loaded) return;
+    loaded = true;
+    kids.replaceChildren(note("loading…"));
+    try {
+      const items = await children();
+      kids.replaceChildren(...(items.length ? items : [note("empty")]));
+    } catch (e) {
+      loaded = false;   // the next open retries
+      kids.replaceChildren(note(`could not load: ${e.message}`));
+    }
+  };
+  row.onclick = () => setOpen(kids.classList.contains("hide"));
+  if (openNodes.has(key)) setOpen(true);
+  return { wrap, row, label };
+}
+
+/**
+ * A scope checkbox standing for one or more folder ids — checked when all of
+ * them are in scope. syncPicks() repaints every one after any scope change, so a
+ * folder ticked in one place shows ticked everywhere it appears.
+ */
+function scopePick(ids, names, title) {
+  const pick = mk("input", "pick");
+  pick.type = "checkbox";
+  pick.title = title;
+  pick.dataset.ids = ids.join(",");
+  pick.checked = ids.length > 0 && ids.every((id) => inScope(id));
+  pick.onclick = (e) => {
+    e.stopPropagation();
+    const rest = state.scopeFolderIds.filter((id) => !ids.includes(id));
+    setScope(pick.checked ? [...rest, ...ids] : rest, { ...state.scopeNames, ...names });
+  };
+  return pick;
+}
+
+function syncPicks() {
+  for (const pick of document.querySelectorAll("input.pick[data-ids]")) {
+    const ids = pick.dataset.ids.split(",").filter(Boolean).map(Number);
+    pick.checked = ids.length > 0 && ids.every((id) => inScope(id));
+  }
+}
+
+async function folderChildren(f, depth) {
+  const subfolders = treeNodes.filter((n) => n.parent_id === f.id).sort(byName)
+    .map((n) => folderNode(n, depth));
+  const files = f.document_count
+    ? (await folderDocs(f.id)).map((d) => fileNode(d, depth))
+    : [];
+  return [...subfolders, ...files];
+}
+
+function folderNode(f, depth) {
+  const scoped = f.owner_thread_id != null;
+  const mine = scoped && f.owner_thread_id === state.threadId;
+  const { wrap, row, label } = treeRow({
+    key: `f:${f.id}`, depth, name: f.name, count: f.document_count,
+    children: () => folderChildren(f, depth + 1),
+  });
+  if (f.origin !== "own") label.title = `${folderLabel(f)} — read-only`;
+
+  const pick = scopePick([f.id], { [f.id]: folderLabel(f) },
+    "Tick to ask questions only inside this folder (and everything under it).");
+  // Another session's folder is hidden from retrieval here whatever the scope
+  // says, so offering it would only produce a scope that answers nothing.
+  if (scoped && !mine) {
+    pick.disabled = true;
+    pick.title = "Owned by another session — it can't answer questions here.";
+  }
+  row.insertBefore(pick, label);
+
+  // Promote, share and delete act on a folder this space owns, at its root.
+  // Everything else in the tree — subfolders, imports, users' folders — is read-only.
+  if (f.origin !== "own" || f.parent_id != null) return wrap;
+
+  // A session-scoped folder answers only inside its own session; label whose it
+  // is so two same-named rows are tellable apart.
+  if (scoped) {
+    row.append(mk("span", "badge", mine ? "this session" : `session #${f.owner_thread_id}`));
+    row.append(actionBtn("⤴", "", "Make this folder space-wide: every chat session will see it.", () => {
+      if (confirm(`Make "${f.name}" space-wide? Every chat session will then see and search it. This cannot be scoped back.`)) {
+        guard(() => promoteFolder(f));
+      }
+    }));
+  } else {
+    // The backend refuses to share a session-scoped folder (promote first), so
+    // only a space-wide one gets the button.
+    row.append(actionBtn("Share", "", "", () => guard(() => shareFolder(f.name))));
+  }
+  row.append(actionBtn("✕", "danger", "", () => {
+    if (confirm(`Remove "${f.name}" and all of its documents?`)) {
+      guard(async () => { await deleteFolder(f.id); toast(`Removed "${f.name}".`); await renderFolders(); });
+    }
+  }));
+  return wrap;
+}
+
+function fileNode(d, depth) {
+  const row = mk("div", "item file");
+  row.style.paddingLeft = indent(depth, 18);   // under the name, past the caret
+  row.title = "Open this document";
+  row.append(mk("span", "name", d.title));
+  const st = d.status?.state;
+  if (st && st !== "ready") row.append(mk("span", `badge ${st === "failed" ? "dead" : "off"}`, st));
+  row.onclick = () => guard(() => openDocument(d));
+  return row;
+}
+
+/**
+ * A user, as a system admin sees them: one more folder, holding that user's
+ * folders. Its checkbox scopes a question to all of them at once.
+ */
+function userNode(email, roots) {
+  const { wrap, row, label } = treeRow({
+    key: `u:${email}`, depth: 0, name: email,
+    children: async () => roots.map((r) => folderNode(r, 1)),
+  });
+  row.classList.add("group");
+  label.title = `${email}'s folders — read-only`;
+  row.insertBefore(scopePick(
+    roots.map((r) => r.id),
+    Object.fromEntries(roots.map((r) => [r.id, folderLabel(r)])),
+    `Tick to ask questions only inside ${email}'s folders.`), label);
+  row.append(mk("span", "badge", "user"));
+  return wrap;
+}
+
 async function renderFolders() {
   const box = $("#folders");
-  const folders = await watchedFolders() ?? [];
-  liveOwnFolderIds = new Set(folders.map((f) => f.id));
-  unreachableScopeIds = new Set(folders
-    .filter((f) => f.owner_thread_id != null && f.owner_thread_id !== state.threadId)
-    .map((f) => f.id));
+  treeNodes = await loadTree() ?? [];
+  docCache.clear();
+  // Any folder in the tree can be a scope, subfolders and users' folders included.
+  liveOwnFolderIds = new Set(treeNodes.map((n) => n.id));
+  unreachableScopeIds = new Set(treeNodes
+    .filter((n) => n.owner_thread_id != null && n.owner_thread_id !== state.threadId)
+    .map((n) => n.id));
   pruneScope();
-  renderScope();   // ownership changes with the open session, and so does the chip
   box.replaceChildren();
-  if (!folders.length) { box.innerHTML = '<div class="empty">no folders indexed</div>'; return; }
 
-  for (const f of folders) {
-    const scoped = f.owner_thread_id != null;
-    const mine = scoped && f.owner_thread_id === state.threadId;
-    const row = document.createElement("div");
-    row.className = "item";
-    row.innerHTML = `<input type="checkbox" class="pick"
-        title="Tick to ask questions only inside this folder (and everything under it).">
-      <span class="name"></span>
-      <span class="badge scope hide"></span>
-      <button class="sm act hide" data-a="promote"
-        title="Make this folder space-wide: every chat session will see it.">⤴</button>
-      <button class="sm act" data-a="share">Share</button>
-      <button class="sm act danger" data-a="rm">✕</button>`;
-    row.querySelector(".name").textContent = f.name;
-    const pick = row.querySelector(".pick");
-    pick.checked = inScope(f.id);
-    // Another session's folder is hidden from retrieval here whatever the scope
-    // says, so offering it would only produce a scope that answers nothing.
-    if (scoped && !mine) {
-      pick.disabled = true;
-      pick.title = "Owned by another session — it can't answer questions here.";
-    }
-    pick.onclick = (e) => {
-      e.stopPropagation();                       // the row itself is not clickable, but be explicit
-      toggleScope(f.id, f.name, pick.checked);
-    };
-    // A session-scoped folder answers only inside its own session; label whose
-    // it is so two same-named rows are tellable apart.
-    const badge = row.querySelector(".scope");
-    if (scoped) {
-      badge.textContent = mine ? "this session" : `session #${f.owner_thread_id}`;
-      badge.classList.remove("hide");
-      row.querySelector('[data-a="promote"]').classList.remove("hide");
-      row.querySelector('[data-a="promote"]').onclick = () => {
-        if (confirm(`Make "${f.name}" space-wide? Every chat session will then see and search it. This cannot be scoped back.`)) {
-          guard(() => promoteFolder(f));
-        }
-      };
-    }
-    // The backend refuses to share a session-scoped folder (promote first), so
-    // don't offer a button that can only 400.
-    if (scoped) row.querySelector('[data-a="share"]').classList.add("hide");
-    else row.querySelector('[data-a="share"]').onclick = () => guard(() => shareFolder(f.name));
-    row.querySelector('[data-a="rm"]').onclick = () => {
-      if (confirm(`Remove "${f.name}" and all of its documents?`)) {
-        guard(async () => { await deleteFolder(f.id); toast(`Removed "${f.name}".`); await renderFolders(); });
-      }
-    };
-    box.append(row);
+  const own = treeNodes.filter((n) => n.origin === "own" && n.parent_id == null).sort(byName);
+  const users = new Map();
+  for (const n of treeNodes.filter((n) => n.origin === "user" && n.parent_id == null).sort(byName)) {
+    if (!users.has(n.owner_email)) users.set(n.owner_email, []);
+    users.get(n.owner_email).push(n);
   }
+
+  if (!own.length && !users.size) {
+    box.append(mk("div", "empty", "no folders indexed"));
+  } else {
+    for (const f of own) box.append(folderNode(f, 0));
+    for (const email of [...users.keys()].sort()) box.append(userNode(email, users.get(email)));
+  }
+  renderScope();   // ownership changes with the open session, and so does the chip
 }
 
 async function renderImports() {
@@ -2008,31 +2388,30 @@ async function renderImports() {
   if (!links.length) { box.innerHTML = '<div class="empty">nothing imported</div>'; return; }
 
   for (const link of links) {
-    const row = document.createElement("div");
-    row.className = "item";
-    row.innerHTML = `<input type="checkbox" class="pick"
-        title="Tick to ask questions only inside this imported folder.">
-      <span class="name"></span>
-      <span class="dead hide" title="The owner revoked or expired this share, so it no longer answers questions.">revoked</span>
-      <button class="sm act danger" data-a="rm">✕</button>`;
-    row.querySelector(".name").textContent = link.folder_name;
+    // A revoked share stops resolving, so the tree no longer holds its folder
+    // and the row expands to nothing — the "revoked" label says why.
+    const node = treeNodes.find((n) => n.id === link.source_folder_id);
+    const { wrap, row, label } = treeRow({
+      key: `l:${link.id}`, depth: 0, name: link.folder_name, count: node?.document_count,
+      children: async () => (node ? folderChildren(node, 1) : []),
+    });
     // An imported folder lives in the sharer's space; the scope predicate matches
     // on folder id, so it works here exactly as an own folder does.
-    const pick = row.querySelector(".pick");
-    pick.checked = inScope(link.source_folder_id);
-    pick.onclick = (e) => {
-      e.stopPropagation();
-      toggleScope(link.source_folder_id, link.folder_name, pick.checked);
-    };
-    // A revoked share leaves the link in place but stops resolving: say so rather
-    // than let it look searchable.
-    row.querySelector(".dead").classList.toggle("hide", link.live !== false);
-    row.querySelector('[data-a="rm"]').onclick = () => {
+    row.insertBefore(scopePick(
+      [link.source_folder_id],
+      { [link.source_folder_id]: `${link.folder_name} (imported)` },
+      "Tick to ask questions only inside this imported folder."), label);
+    if (link.live === false) {
+      const dead = mk("span", "dead", "revoked");
+      dead.title = "The owner revoked or expired this share, so it no longer answers questions.";
+      row.append(dead);
+    }
+    row.append(actionBtn("✕", "danger", "", () => {
       if (confirm(`Remove the imported folder "${link.folder_name}"?\n\nOnly your link is removed — the owner's documents are untouched, and the same token can import it again.`)) {
         guard(() => removeImport(link));
       }
-    };
-    box.append(row);
+    }));
+    box.append(wrap);
   }
 }
 
@@ -2064,6 +2443,53 @@ function renderContext() {
   // A scope survives a reload (it lives in the per-user prefs), so paint the chip
   // whenever the shell is refreshed — not only when the scope changes.
   renderScope();
+  // The note is per session, so opening another session swaps which one shows.
+  renderSessionContext();
+}
+
+/* -------------------------------------------------------- session context */
+//
+// Facts the user hands the model for one session — an official's new post, an
+// event newer than the documents. Kept per thread in the per-user prefs and sent
+// with every turn: the server stores nothing, so nothing can go stale there, and
+// Clear takes effect on the very next question.
+
+const SESSION_CONTEXT_MAX = 8000;   // NewChatRequest.session_context max_length
+
+const sessionContext = () => (state.sessionNotes[state.threadId] ?? "").trim();
+
+function setSessionContext(text) {
+  const note = text.trim();
+  if (note) state.sessionNotes[state.threadId] = note;
+  else delete state.sessionNotes[state.threadId];
+  savePrefs();
+  renderSessionContext();
+}
+
+function renderSessionContext() {
+  const note = sessionContext();
+  const bar = $("#ctxBar");
+  bar.classList.toggle("hide", !note);
+  if (note) {
+    const first = note.split("\n")[0];
+    bar.querySelector(".txt").textContent =
+      `session context: ${first}${note.includes("\n") ? " …" : ""} (${note.length} chars)`;
+    bar.title = note;
+  }
+  $("#ctxToggle").classList.toggle("on", !!note);
+  $("#ctxPanel").classList.add("hide");
+}
+
+const updateContextCount = () => {
+  $("#ctxCount").textContent =
+    `${$("#ctxText").value.length}/${SESSION_CONTEXT_MAX} · this session only, never saved to the knowledge base`;
+};
+
+function openSessionContext() {
+  $("#ctxText").value = sessionContext();
+  updateContextCount();
+  $("#ctxPanel").classList.remove("hide");
+  $("#ctxText").focus();
 }
 
 /* ------------------------------------------------------------------- admin */
@@ -2083,14 +2509,38 @@ async function detectAdmin() {
   $("#adminBtn").classList.toggle("hide", !state.isAdmin);
 }
 
+// A page of its own rather than an overlay: managing users means scanning a
+// table and working on one user beside it. "#admin" in the URL keeps the page
+// open across a reload.
+
+let adminUsers = [];
+let adminSort = { key: "email", dir: 1 };
+let selectedUserId = null;
+
 async function openAdmin() {
-  $("#admin").classList.remove("hide");
+  $("#adminView").classList.remove("hide");
+  if (location.hash !== "#admin") history.replaceState(null, "", "#admin");
   await refreshAdmin();
 }
-const closeAdmin = () => $("#admin").classList.add("hide");
+
+function closeAdmin() {
+  $("#adminView").classList.add("hide");
+  history.replaceState(null, "", location.pathname + location.search);
+  // A role change moves users into or out of this admin's own folder tree.
+  guard(renderFolders);
+}
+
+function showAdminTab(tab) {
+  for (const b of document.querySelectorAll("#adminView .tabs button")) {
+    b.classList.toggle("on", b.dataset.tab === tab);
+  }
+  for (const name of ["users", "shares", "links"]) {
+    $(`#tab-${name}`).classList.toggle("hide", name !== tab);
+  }
+}
 
 async function refreshAdmin() {
-  await Promise.all([renderAdminUsers(), renderAdminShares(), renderAdminLinks()]);
+  await Promise.all([loadAdminUsers(), renderAdminShares(), renderAdminLinks()]);
 }
 
 function makeBtn(label, cls, onClick) {
@@ -2101,56 +2551,6 @@ function makeBtn(label, cls, onClick) {
   return b;
 }
 
-async function renderAdminUsers() {
-  const box = $("#adminUsers");
-  box.textContent = "Loading…";
-  const users = await adminApi("GET", "/users");
-  box.replaceChildren();
-
-  for (const u of users) {
-    const row = document.createElement("div");
-    row.className = "arow";
-
-    const info = document.createElement("div");
-    info.className = "grow";
-    info.innerHTML = `<span></span>
-      <div class="sub">${u.search_space_count} space(s)</div>`;
-    info.querySelector("span").textContent = u.email;
-    if (u.is_superuser) info.querySelector("span").after(tagged(" admin", "admin"));
-    if (!u.is_active) info.querySelector("span").after(tagged(" inactive", "off"));
-    row.append(info);
-
-    row.append(makeBtn(u.is_superuser ? "Remove admin" : "Make admin", "", () =>
-      guard(async () => {
-        await adminApi("PATCH", `/users/${u.id}`, { json: { is_superuser: !u.is_superuser } });
-        await renderAdminUsers();
-      })));
-    row.append(makeBtn(u.is_active ? "Deactivate" : "Activate", "", () =>
-      guard(async () => {
-        await adminApi("PATCH", `/users/${u.id}`, { json: { is_active: !u.is_active } });
-        await renderAdminUsers();
-      })));
-
-    const foldersBox = document.createElement("div");
-    foldersBox.className = "afolders hide";
-    row.append(makeBtn("Folders", "", () =>
-      guard(() => toggleUserFolders(u, foldersBox))));
-
-    row.append(makeBtn("Delete", "danger", () => {
-      if (confirm(`Delete user ${u.email} and ALL their data (spaces, folders, documents, chats)?\n\nThis cannot be undone.`)) {
-        guard(async () => {
-          await adminApi("DELETE", `/users/${u.id}`);
-          toast(`Deleted ${u.email}.`);
-          await refreshAdmin();
-        });
-      }
-    }));
-
-    box.append(row, foldersBox);
-  }
-  if (!users.length) box.innerHTML = '<div class="empty">no users</div>';
-}
-
 const tagged = (text, cls) => {
   const s = document.createElement("span");
   s.className = `badge ${cls}`;
@@ -2159,45 +2559,244 @@ const tagged = (text, cls) => {
   return s;
 };
 
-async function toggleUserFolders(user, box) {
-  if (!box.classList.contains("hide")) { box.classList.add("hide"); return; }
-  box.classList.remove("hide");
-  box.textContent = "Loading…";
-  const folders = await adminApi("GET", `/users/${user.id}/folders`);
-  box.replaceChildren();
-  if (!folders.length) { box.innerHTML = '<div class="empty">no folders</div>'; return; }
-  for (const f of folders) {
-    const r = document.createElement("div");
-    r.className = "arow";
-    const g = document.createElement("div");
-    g.className = "grow";
-    g.innerHTML = `<span></span> <span class="sub">in ${f.search_space_name ?? `space #${f.search_space_id}`}</span>`;
-    g.querySelector("span").textContent = f.name;
-    if (f.owner_thread_id != null) g.querySelector("span").after(tagged(` session #${f.owner_thread_id}`, "off"));
-    r.append(g);
-    if (f.owner_thread_id != null) {
-      r.append(makeBtn("Promote", "", () => {
-        if (confirm(`Make "${f.name}" (of ${user.email}) space-wide? All of their sessions will see it.`)) {
-          guard(async () => {
-            await adminApi("PATCH", `/folders/${f.id}/scope`);
-            toast(`"${f.name}" is now space-wide.`);
-            box.classList.add("hide");
-            await toggleUserFolders(user, box);  // re-expand with fresh data
-          });
-        }
-      }));
-    }
-    r.append(makeBtn("Delete", "danger", () => {
-      if (confirm(`Delete folder "${f.name}" (of ${user.email}) and its documents?`)) {
-        guard(async () => {
-          await adminApi("DELETE", `/folders/${f.id}`);
-          toast(`Deleting "${f.name}" (documents are queued for removal).`);
-          await toggleUserFolders(user, box);  // collapse
-        });
-      }
-    }));
-    box.append(r);
+const badge = (text, cls = "") => mk("span", `badge ${cls}`.trim(), text);
+const cell = (...children) => { const td = mk("td"); td.append(...children); return td; };
+const when = (iso) => (iso ? new Date(iso).toLocaleString() : "never");
+// The server refuses self-demotion, self-deactivation and self-deletion; the
+// page greys those out instead of offering buttons that can only 400.
+const isSelf = (u) => u.email === state.email;
+
+async function loadAdminUsers() {
+  adminUsers = await adminApi("GET", "/users") ?? [];
+  if (!adminUsers.some((u) => u.id === selectedUserId)) selectedUserId = null;
+  renderUserRows();
+  await renderUserDetail();
+}
+
+function sortValue(u, key) {
+  const v = u[key];
+  if (key === "email") return u.email.toLowerCase();
+  if (key === "last_login") return v ? Date.parse(v) : 0;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  return v ?? 0;
+}
+
+function renderUserRows() {
+  const q = $("#userSearch").value.trim().toLowerCase();
+  const role = $("#userRole").value;
+  const status = $("#userStatus").value;
+  const shown = adminUsers
+    .filter((u) => !q || u.email.toLowerCase().includes(q) ||
+                   (u.display_name ?? "").toLowerCase().includes(q))
+    .filter((u) => !role || (role === "admin") === u.is_superuser)
+    .filter((u) => !status || (status === "active") === u.is_active)
+    .sort((a, b) => {
+      const x = sortValue(a, adminSort.key), y = sortValue(b, adminSort.key);
+      return (x < y ? -1 : x > y ? 1 : 0) * adminSort.dir;
+    });
+
+  const admins = adminUsers.filter((u) => u.is_superuser).length;
+  $("#userSummary").textContent =
+    `${shown.length} of ${adminUsers.length} users · ${admins} admin${admins === 1 ? "" : "s"}`;
+  for (const th of document.querySelectorAll(".utable th[data-sort]")) {
+    if (th.dataset.sort === adminSort.key) th.dataset.dir = adminSort.dir > 0 ? "▲" : "▼";
+    else delete th.dataset.dir;
   }
+
+  const body = $("#userRows");
+  body.replaceChildren();
+  if (!shown.length) {
+    const td = mk("td", "empty", adminUsers.length ? "no users match" : "no users");
+    td.colSpan = 6;
+    const tr = mk("tr");
+    tr.append(td);
+    body.append(tr);
+    return;
+  }
+
+  for (const u of shown) {
+    const tr = mk("tr", u.id === selectedUserId ? "sel" : "");
+    const who = mk("td");
+    const name = mk("div", "", u.display_name || u.email);
+    if (isSelf(u)) name.append(tagged("you", ""));
+    who.append(name);
+    if (u.display_name) who.append(mk("div", "sub", u.email));
+    tr.append(
+      who,
+      cell(badge(u.is_superuser ? "admin" : "user", u.is_superuser ? "admin" : "")),
+      cell(badge(u.is_active ? "active" : "deactivated", u.is_active ? "" : "off")),
+      mk("td", "sub", when(u.last_login)),
+      mk("td", "num", String(u.folder_count)),
+      mk("td", "num", String(u.document_count)),
+    );
+    tr.onclick = () => guard(() => selectUser(u.id));
+    body.append(tr);
+  }
+}
+
+async function selectUser(id) {
+  selectedUserId = selectedUserId === id ? null : id;
+  renderUserRows();
+  await renderUserDetail();
+}
+
+async function renderUserDetail() {
+  const pane = $("#userDetail");
+  const u = adminUsers.find((x) => x.id === selectedUserId);
+  pane.classList.toggle("hide", !u);
+  if (!u) return;
+  pane.replaceChildren();
+
+  const head = mk("header");
+  const title = mk("div", "grow");
+  title.append(mk("strong", "", u.display_name || u.email), mk("div", "sub", u.email));
+  head.append(title, makeBtn("✕", "", () => guard(() => selectUser(u.id))));
+  pane.append(head);
+
+  const facts = mk("div", "sub", [
+    `${u.search_space_count} space(s) · ${u.folder_count} folder(s) · ${u.document_count} document(s)`,
+    `last sign-in: ${when(u.last_login)}`,
+  ].join("\n"));
+  facts.style.cssText = "margin-top:8px; white-space:pre-line";
+  pane.append(facts);
+
+  // ---- profile
+  pane.append(mk("h3", "", "Display name"));
+  const nameRow = mk("div", "stack");
+  const nameInput = mk("input");
+  nameInput.placeholder = "shown instead of the email";
+  nameInput.value = u.display_name ?? "";
+  nameRow.append(nameInput, makeBtn("Save", "", () => guard(async () => {
+    await adminApi("PATCH", `/users/${u.id}`, { json: { display_name: nameInput.value } });
+    toast("Name saved.");
+    await loadAdminUsers();
+  })));
+  pane.append(nameRow);
+
+  // ---- access
+  pane.append(mk("h3", "", "Access"));
+  const access = mk("div", "actions");
+  access.style.marginTop = "0";
+  const roleBtn = makeBtn(u.is_superuser ? "Remove admin" : "Make admin", "", () => {
+    const msg = u.is_superuser
+      ? `Remove admin from ${u.email}?\n\nThey lose this page, and other users' folders disappear from their folder tree and answers.`
+      : `Make ${u.email} a system admin?\n\nThey get this page, and every non-admin user's folders appear — read-only — in their folder tree and answers.`;
+    if (confirm(msg)) {
+      guard(async () => {
+        await adminApi("PATCH", `/users/${u.id}`, { json: { is_superuser: !u.is_superuser } });
+        await loadAdminUsers();
+      });
+    }
+  });
+  const activeBtn = makeBtn(u.is_active ? "Deactivate" : "Activate", "", () =>
+    guard(async () => {
+      await adminApi("PATCH", `/users/${u.id}`, { json: { is_active: !u.is_active } });
+      await loadAdminUsers();
+    }));
+  if (isSelf(u)) {
+    roleBtn.disabled = activeBtn.disabled = true;
+    roleBtn.title = activeBtn.title = "You can't change your own access.";
+  }
+  access.append(roleBtn, activeBtn);
+  pane.append(access, mk("div", "note", u.is_superuser
+    ? "Admins manage users and read every non-admin user's folders."
+    : "Their space-wide folders are readable by every admin; nothing of theirs can be changed from an admin's chat."));
+
+  // ---- password
+  pane.append(mk("h3", "", "Reset password"));
+  const pwRow = mk("div", "stack");
+  const pw = mk("input");
+  pw.type = "password";
+  pw.placeholder = "new password (min. 8)";
+  pw.autocomplete = "new-password";
+  pwRow.append(pw, makeBtn("Set", "", () => {
+    if (pw.value.length < 8) { toast("Passwords need at least 8 characters.", "warn"); return; }
+    guard(async () => {
+      await adminApi("POST", `/users/${u.id}/password`, { json: { password: pw.value } });
+      pw.value = "";
+      toast(`Password updated for ${u.email}. Browsers already signed in stay signed in ` +
+        "until their session expires — deactivate the account to cut them off now.", "ok", 12000);
+    });
+  }));
+  pane.append(pwRow);
+
+  // ---- folders
+  pane.append(mk("h3", "", "Folders"));
+  const folders = mk("div", "empty", "loading…");
+  pane.append(folders);
+
+  // ---- delete
+  pane.append(mk("h3", "", "Danger zone"));
+  const danger = mk("div", "dangerzone");
+  danger.append(mk("div", "sub", "Deletes the account and everything it owns: spaces, folders, documents and chats."));
+  const del = makeBtn("Delete user", "danger", () => {
+    if (confirm(`Delete user ${u.email} and ALL their data (spaces, folders, documents, chats)?\n\nThis cannot be undone.`)) {
+      guard(async () => {
+        await adminApi("DELETE", `/users/${u.id}`);
+        toast(`Deleted ${u.email}.`);
+        selectedUserId = null;
+        await refreshAdmin();
+      });
+    }
+  });
+  del.style.marginTop = "8px";
+  if (isSelf(u)) { del.disabled = true; del.title = "You can't delete your own account."; }
+  danger.append(del);
+  pane.append(danger);
+
+  await renderUserFolders(u, folders);
+}
+
+/** One user's folders, nested by parent_id, with the admin actions on each root. */
+async function renderUserFolders(user, box) {
+  const folders = await adminApi("GET", `/users/${user.id}/folders`) ?? [];
+  box.className = "";
+  box.replaceChildren();
+  if (!folders.length) { box.append(mk("div", "empty", "no folders")); return; }
+
+  const ids = new Set(folders.map((f) => f.id));
+  const childrenOf = new Map();
+  for (const f of folders) {
+    const pid = ids.has(f.parent_id) ? f.parent_id : null;
+    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+    childrenOf.get(pid).push(f);
+  }
+
+  const walk = (pid, depth) => {
+    for (const f of (childrenOf.get(pid) ?? []).sort(byName)) {
+      const r = mk("div", "arow");
+      r.style.paddingLeft = indent(depth);
+      const g = mk("div", "grow");
+      g.append(mk("span", "", f.name));
+      if (depth === 0 && f.owner_thread_id != null) g.append(tagged(`session #${f.owner_thread_id}`, "off"));
+      r.append(g);
+      if (depth === 0) {
+        if (f.owner_thread_id != null) {
+          r.append(makeBtn("Promote", "", () => {
+            if (confirm(`Make "${f.name}" (of ${user.email}) space-wide? All of their sessions will see it — and so will every admin.`)) {
+              guard(async () => {
+                await adminApi("PATCH", `/folders/${f.id}/scope`);
+                toast(`"${f.name}" is now space-wide.`);
+                await renderUserFolders(user, box);
+              });
+            }
+          }));
+        }
+        r.append(makeBtn("Delete", "danger", () => {
+          if (confirm(`Delete folder "${f.name}" (of ${user.email}) and its documents?`)) {
+            guard(async () => {
+              await adminApi("DELETE", `/folders/${f.id}`);
+              toast(`Deleting "${f.name}" (documents are queued for removal).`);
+              await loadAdminUsers();
+            });
+          }
+        }));
+      }
+      box.append(r);
+      walk(f.id, depth + 1);
+    }
+  };
+  walk(null, 0);
 }
 
 async function renderAdminShares() {
@@ -2284,6 +2883,8 @@ async function start() {
   renderContext();
   await detectAdmin();
   showApp();
+  // "#admin" survives a reload, so an admin lands back on the page they left.
+  if (state.isAdmin && location.hash === "#admin") await openAdmin();
 }
 
 async function doAuth(mode) {
@@ -2388,6 +2989,61 @@ function init() {
   $("#adminBtn").onclick = () => guard(openAdmin);
   $("#adminClose").onclick = closeAdmin;
   $("#adminRefresh").onclick = () => guard(refreshAdmin);
+  for (const b of document.querySelectorAll("#adminView .tabs button")) {
+    b.onclick = () => showAdminTab(b.dataset.tab);
+  }
+  $("#userSearch").addEventListener("input", renderUserRows);
+  $("#userRole").onchange = renderUserRows;
+  $("#userStatus").onchange = renderUserRows;
+  for (const th of document.querySelectorAll(".utable th[data-sort]")) {
+    th.onclick = () => {
+      const key = th.dataset.sort;
+      adminSort = { key, dir: adminSort.key === key ? -adminSort.dir : 1 };
+      renderUserRows();
+    };
+  }
+  $("#newUserBtn").onclick = () => {
+    $("#newUserForm").classList.toggle("hide");
+    if (!$("#newUserForm").classList.contains("hide")) $("#nuEmail").focus();
+  };
+  $("#nuCancel").onclick = () => { $("#newUserForm").reset(); $("#newUserForm").classList.add("hide"); };
+  $("#newUserForm").onsubmit = (e) => {
+    e.preventDefault();
+    guard(async () => {
+      const made = await adminApi("POST", "/users", {
+        json: {
+          email: $("#nuEmail").value.trim(),
+          password: $("#nuPassword").value,
+          display_name: $("#nuName").value.trim() || undefined,
+          is_superuser: $("#nuAdmin").checked,
+        },
+      });
+      toast(`Created ${made.email}. They can sign in now with that password.`, "ok", 9000);
+      $("#newUserForm").reset();
+      $("#newUserForm").classList.add("hide");
+      selectedUserId = made.id;
+      await loadAdminUsers();
+    });
+  };
+
+  // Session context: the panel edits the open session's note.
+  $("#ctxToggle").onclick = () =>
+    ($("#ctxPanel").classList.contains("hide") ? openSessionContext() : $("#ctxPanel").classList.add("hide"));
+  $("#ctxEdit").onclick = openSessionContext;
+  $("#ctxCancel").onclick = () => $("#ctxPanel").classList.add("hide");
+  $("#ctxText").addEventListener("input", updateContextCount);
+  $("#ctxSave").onclick = () => {
+    setSessionContext($("#ctxText").value);
+    toast(sessionContext()
+      ? "Session context saved — every question and report in this session now uses it."
+      : "Session context cleared.");
+  };
+  $("#ctxClear").onclick = () => {
+    if (!sessionContext() || confirm("Clear this session's context?")) {
+      setSessionContext("");
+      toast("Session context cleared.");
+    }
+  };
 
   $("#newSessionBtn").onclick = () => {
     const title = $("#newSession").value.trim();
@@ -2434,8 +3090,15 @@ function init() {
   $("#citeClose").onclick = closeCitation;
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (!$("#admin").classList.contains("hide")) closeAdmin();
-    else closeCitation();
+    if (!$("#adminView").classList.contains("hide")) {
+      // Close the open user first; a second Escape leaves the page.
+      if (selectedUserId) guard(() => selectUser(selectedUserId));
+      else closeAdmin();
+    } else if (!$("#ctxPanel").classList.contains("hide")) {
+      $("#ctxPanel").classList.add("hide");
+    } else {
+      closeCitation();
+    }
   });
 
   const q = $("#q");

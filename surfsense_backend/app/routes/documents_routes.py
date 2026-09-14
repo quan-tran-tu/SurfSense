@@ -1275,14 +1275,20 @@ async def read_document(
                 status_code=404, detail=f"Document with id {document_id} not found"
             )
 
-        # Check permission for the search space
-        await check_permission(
-            session,
-            auth,
-            document.search_space_id,
-            Permission.DOCUMENTS_READ.value,
-            "You don't have permission to read documents in this search space",
-        )
+        # Same fallback as by-chunk: a document read through a share link — or
+        # through an admin's view of a user's folders — keeps its owner's
+        # search_space_id, where the reader holds no membership.
+        try:
+            await check_permission(
+                session,
+                auth,
+                document.search_space_id,
+                Permission.DOCUMENTS_READ.value,
+                "You don't have permission to read documents in this search space",
+            )
+        except HTTPException:
+            if not await user_can_read_via_link(session, auth.user.id, document):
+                raise
 
         raw_content = document.content or ""
         return DocumentRead(

@@ -54,6 +54,7 @@ from app.agents.chat.multi_agent_chat.shared.retrieval import (
 )
 from app.agents.chat.runtime.path_resolver import current_thread_id
 from app.agents.chat.shared.search_query import build_search_terms
+from app.agents.chat.shared.session_context import render_session_context_block
 from app.agents.chat.shared.workspace_intent import mentions_workspace
 from app.agents.chat.shared.workspace_tree import build_workspace_tree
 from app.db import shielded_async_session
@@ -174,8 +175,13 @@ async def stream_simple_rag(
     initial_step_title: str = "",
     top_k: int = DEFAULT_TOP_K,
     no_results_message: str = NO_RESULTS_MESSAGE,
+    session_context: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Retrieve, then stream one grounded answer. Yields SSE frames.
+
+    ``session_context`` is the user's note for the session. It is not used to
+    retrieve — the question is — but it is answered from, and ranks above the
+    passages where the two disagree.
 
     Emits the same text-start / text-delta / text-end triple the agent relay
     does, so no client change is needed to render it. Populates
@@ -233,7 +239,9 @@ async def stream_simple_rag(
             items=items,
         )
 
-    if context is None and workspace is None:
+    session_block = render_session_context_block(session_context)
+
+    if context is None and workspace is None and session_block is None:
         # No passages means nothing to answer from and nothing to leak, so the
         # miss is reported without a model round-trip. Asking the model to
         # announce its own miss is what small models turn back into an
@@ -242,7 +250,9 @@ async def stream_simple_rag(
         # A workspace listing counts as something to answer from, so it holds
         # this branch off: an empty knowledge base retrieves nothing at all, and
         # "how many documents do I have" must still be answerable as "none"
-        # rather than as "I couldn't find anything about this".
+        # rather than as "I couldn't find anything about this". The user's
+        # session note counts too — "who holds that post now?" may be answered
+        # by the note alone.
         text_id = streaming_service.generate_text_id()
         yield streaming_service.format_text_start(text_id)
         if content_builder is not None:
@@ -260,9 +270,15 @@ async def stream_simple_rag(
 
     # The passages come first: they are what most turns are answered from, and
     # the listing is the smaller, more easily-skimmed block of the two.
-    blocks = [block for block in (context, workspace) if block]
+    # The user's session note goes last, nearest the question it qualifies.
+    blocks = [block for block in (context, workspace, session_block) if block]
     messages = [
-        SystemMessage(content=build_system_prompt(workspace_tree=workspace is not None)),
+        SystemMessage(
+            content=build_system_prompt(
+                workspace_tree=workspace is not None,
+                session_context=session_block is not None,
+            )
+        ),
         HumanMessage(
             content="\n\n".join([*blocks, f"<question>\n{question}\n</question>"])
         ),

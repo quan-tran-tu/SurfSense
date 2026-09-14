@@ -81,7 +81,7 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         # -> rendered tree. The thread is part of the key because session-scoped
         # folders make the tree differ per chat, and this middleware instance is
         # shared across threads via the cached compiled graph.
-        self._cache: dict[tuple[int, int | None, int, tuple[int, int]], str] = {}
+        self._cache: dict[tuple[int, int | None, int, tuple[int, ...]], str] = {}
         self._last_cache_outcome = "miss"
 
     async def abefore_agent(  # type: ignore[override]
