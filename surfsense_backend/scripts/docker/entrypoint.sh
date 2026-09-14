@@ -25,10 +25,20 @@ echo "Starting SurfSense with SERVICE_ROLE=${SERVICE_ROLE}"
 #   CELERY_MIN_WORKERS  – min workers kept warm
 #   CELERY_QUEUES       – comma-separated queues to consume
 #                         (empty = all queues for backward compat)
+#   CELERY_POOL         – celery pool implementation. Leave unset for the
+#                         prefork default. Set to `solo` when the embedding
+#                         model lives on a GPU: config builds
+#                         embedding_model_instance at import, so the parent
+#                         holds a CUDA context and every prefork child dies
+#                         with "Cannot re-initialize CUDA in forked
+#                         subprocess" the moment it embeds. Autoscale and
+#                         max-tasks-per-child are prefork-only and are
+#                         dropped automatically for other pools.
 CELERY_MAX_WORKERS="${CELERY_MAX_WORKERS:-10}"
 CELERY_MIN_WORKERS="${CELERY_MIN_WORKERS:-2}"
 CELERY_MAX_TASKS_PER_CHILD="${CELERY_MAX_TASKS_PER_CHILD:-50}"
 CELERY_QUEUES="${CELERY_QUEUES:-}"
+CELERY_POOL="${CELERY_POOL:-prefork}"
 
 # ── Graceful shutdown ────────────────────────────────────────
 PIDS=()
@@ -102,13 +112,22 @@ start_worker() {
         QUEUE_ARGS="--queues=${DEFAULT_Q},${DEFAULT_Q}.connectors,${DEFAULT_Q}.gateway"
     fi
 
-    echo "Starting Celery Worker (autoscale=${CELERY_MAX_WORKERS},${CELERY_MIN_WORKERS}, max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD}, queues=${CELERY_QUEUES:-all})..."
+    # --autoscale, --max-tasks-per-child and -Ofair all act on the prefork
+    # process pool; celery rejects or ignores them for solo/threads.
+    POOL_ARGS="--pool=${CELERY_POOL}"
+    if [ "${CELERY_POOL}" = "prefork" ]; then
+        POOL_ARGS="${POOL_ARGS} --autoscale=${CELERY_MAX_WORKERS},${CELERY_MIN_WORKERS}"
+        POOL_ARGS="${POOL_ARGS} --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD}"
+        POOL_ARGS="${POOL_ARGS} -Ofair"
+        echo "Starting Celery Worker (autoscale=${CELERY_MAX_WORKERS},${CELERY_MIN_WORKERS}, max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD}, queues=${CELERY_QUEUES:-all})..."
+    else
+        echo "Starting Celery Worker (pool=${CELERY_POOL}, queues=${CELERY_QUEUES:-all})..."
+    fi
+
     celery -A app.celery_app worker \
         --loglevel=info \
-        --autoscale="${CELERY_MAX_WORKERS},${CELERY_MIN_WORKERS}" \
-        --max-tasks-per-child="${CELERY_MAX_TASKS_PER_CHILD}" \
+        ${POOL_ARGS} \
         --prefetch-multiplier=1 \
-        -Ofair \
         ${QUEUE_ARGS} &
     PIDS+=($!)
     echo "  Celery Worker PID=${PIDS[-1]}"
