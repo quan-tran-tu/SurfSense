@@ -95,22 +95,27 @@ class DoclingService:
                 pipeline_options.do_table_structure = True
                 logger.info("✅ Table structure detection enabled")
 
-            # Configure GPU acceleration for WSL2 if available
-            if hasattr(pipeline_options, "accelerator_device"):
-                if self.use_gpu:
-                    try:
-                        pipeline_options.accelerator_device = "cuda"
-                        logger.info("🚀 GPU acceleration enabled (CUDA)")
-                    except Exception as e:
-                        logger.warning(f"⚠️ GPU acceleration failed, using CPU: {e}")
-                        pipeline_options.accelerator_device = "cpu"
-                else:
-                    pipeline_options.accelerator_device = "cpu"
-                    logger.info("🖥️ Using CPU acceleration")
-            else:
-                logger.info(
-                    "⚠️ Accelerator device attribute not available in this Docling version"
+            # Docling conversion is forced to CPU. On this deployment the
+            # pod's CUDA context can die mid-batch (host snapd reloads) and
+            # a GPU kernel can then hang a Celery task forever on a document
+            # that converts fine elsewhere (07-nd-53-2022 did it twice).
+            # CPU is slower but it never hangs the pipeline. Set
+            # DOCLING_ACCELERATOR=cuda to opt back in once GPU is stable.
+            accelerator = os.environ.get("DOCLING_ACCELERATOR", "cpu")
+            if accelerator == "cuda" and not self.use_gpu:
+                logger.warning(
+                    "⚠️ DOCLING_ACCELERATOR=cuda but no GPU detected; using CPU"
                 )
+                accelerator = "cpu"
+            try:
+                # Docling 2.8x: accelerator_options.device (str or AcceleratorDevice)
+                pipeline_options.accelerator_options.device = accelerator
+                logger.info(f"🖥️ Docling accelerator set to {accelerator}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not set accelerator_options.device: {e}")
+                if hasattr(pipeline_options, "accelerator_device"):
+                    pipeline_options.accelerator_device = accelerator
+            self.use_gpu = accelerator != "cpu"
 
             # Create PDF format option with backend
             pdf_format_option = PdfFormatOption(
