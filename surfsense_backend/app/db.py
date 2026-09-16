@@ -2259,6 +2259,121 @@ class FolderLink(BaseModel, TimestampMixin):
     source_folder = relationship("Folder")
 
 
+class UserGroup(BaseModel, TimestampMixin):
+    """A named set of users an admin can grant folders to, all at once.
+
+    Deliberately global rather than per-search-space: the point is to cut across
+    the per-user space isolation that every other model here enforces, so that a
+    team can be given the admin's "general" documents without each member
+    accepting a share token. Only system admins create, edit or populate groups
+    (see ``app.routes.admin_routes``); members only ever read the result.
+    """
+
+    __tablename__ = "user_groups"
+    __table_args__ = (UniqueConstraint("name", name="uq_user_group_name"),)
+
+    name = Column(String(100), nullable=False, index=True)
+    description = Column(String(500), nullable=True)
+    created_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # passive_deletes: both children carry ON DELETE CASCADE, so dropping a group
+    # need not load its rows first.
+    members = relationship(
+        "UserGroupMembership",
+        back_populates="group",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    folder_grants = relationship(
+        "FolderGroupGrant",
+        back_populates="group",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class UserGroupMembership(BaseModel, TimestampMixin):
+    """One user's membership of one :class:`UserGroup`.
+
+    Membership is read per query, exactly like link liveness: removing a row ends
+    the member's access to every folder granted to that group on their very next
+    question, not after some sweep.
+    """
+
+    __tablename__ = "user_group_memberships"
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_id", name="uq_user_group_member"),
+    )
+
+    group_id = Column(
+        Integer,
+        ForeignKey("user_groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    added_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    group = relationship("UserGroup", back_populates="members")
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class FolderGroupGrant(BaseModel, TimestampMixin):
+    """A folder subtree readable by every member of one :class:`UserGroup`.
+
+    The third grant shape alongside ``SharedFolder``/``FolderLink`` (one space
+    accepts one share) and the system-admin grant (an admin reads every user).
+    Like both of those it is read *through* — no documents are copied, the rows
+    keep the granting space's ``search_space_id`` — and it is folded into
+    ``linked_folder_ids_subquery``, so it is read-only everywhere by the same
+    machinery that makes linked folders read-only.
+
+    There is no acceptance step: an admin grants, and the group's members see it.
+    That is the difference from a share token, and the reason only admins may
+    create one.
+    """
+
+    __tablename__ = "folder_group_grants"
+    __table_args__ = (
+        UniqueConstraint("group_id", "folder_id", name="uq_folder_group_grant"),
+    )
+
+    group_id = Column(
+        Integer,
+        ForeignKey("user_groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    folder_id = Column(
+        Integer,
+        ForeignKey("folders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    granted_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    group = relationship("UserGroup", back_populates="folder_grants")
+    folder = relationship("Folder")
+
+
 class PromptMode(StrEnum):
     transform = "transform"
     explore = "explore"

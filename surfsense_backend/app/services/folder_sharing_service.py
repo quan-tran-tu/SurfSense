@@ -6,12 +6,22 @@ its space filter from ``search_space_id == X`` to "owned by X, or inside a folde
 X has a live link to". :func:`linked_folder_ids_subquery` is the single definition
 of that second clause; use it rather than rebuilding the predicate.
 
-System admins hold one more grant of the same shape, with no link row behind it:
-a space owned by a superuser reads every non-admin user's space-wide folders (see
-:func:`_admin_visible_roots`). It is folded into the same subquery, so every
-surface that honours links — retrieval, the agent's read-only ``_shared`` mount,
-citations, mention and scope pins, the write guard — honours it too, and none of
-them can drift from the others.
+Two more grants of the same shape carry no link row behind them, and both fold
+into the same subquery:
+
+* a space owned by a superuser reads every non-admin user's space-wide folders
+  (:func:`_admin_visible_roots`);
+* a space whose owner belongs to a :class:`~app.db.UserGroup` reads every folder
+  an admin granted to that group (:func:`_group_granted_roots`).
+
+Folding them in is what makes every surface that honours links — retrieval, the
+agent's read-only ``_shared`` mount, citations, mention and scope pins, the write
+guard — honour them too, with no chance of drifting from one another.
+
+Note what is deliberately *absent*: nothing here makes two members of a group see
+each other's folders. Group membership only carries what an admin explicitly
+granted to the group. A user's own uploads stay private unless they mint a share
+token for them.
 """
 
 import secrets
@@ -23,11 +33,14 @@ from sqlalchemy.orm import aliased
 from app.db import (
     Document,
     Folder,
+    FolderGroupGrant,
     FolderLink,
     SearchSpace,
     SearchSpaceMembership,
     SharedFolder,
     User,
+    UserGroup,
+    UserGroupMembership,
 )
 
 # Linked folders are surfaced to the agent under this reserved prefix so they are
@@ -91,6 +104,47 @@ def _admin_visible_roots(search_space_id: int | Select | list[int]) -> Select:
     )
 
 
+def _group_granted_roots(search_space_id: int | Select | list[int]) -> Select:
+    """Folders granted to a user group the viewing space's owner belongs to.
+
+    Selects ``id`` and ``group_name``. The grant is made by an admin against a
+    :class:`~app.db.UserGroup`; every member's space picks it up with no
+    acceptance step, which is the whole difference from a share token.
+
+    Two exclusions matter:
+
+    * folders the viewing space *owns* are filtered out. They are readable
+      already, and letting them in through this door would make them show up in
+      ``linked_folder_ids_subquery`` — which the write guard reads as "belongs to
+      another space, refuse the write". An admin granting their own "General"
+      folder to a group must still be able to edit it.
+    * session-scoped folders are filtered out, for the same reason
+      :func:`_admin_visible_roots` skips them: they are invisible even to their
+      owner's other chats, so a grant must not be wider than the owner's own view.
+
+    Membership is read per query, so removing someone from a group ends their
+    access on the next question.
+    """
+    viewer_space = aliased(SearchSpace)
+
+    viewer_groups = (
+        select(UserGroupMembership.group_id)
+        .join(viewer_space, viewer_space.user_id == UserGroupMembership.user_id)
+        .where(_in_spaces(viewer_space.id, search_space_id))
+    )
+    return (
+        select(Folder.id.label("id"), UserGroup.name.label("group_name"))
+        .select_from(FolderGroupGrant)
+        .join(Folder, Folder.id == FolderGroupGrant.folder_id)
+        .join(UserGroup, UserGroup.id == FolderGroupGrant.group_id)
+        .where(
+            FolderGroupGrant.group_id.in_(viewer_groups),
+            ~_in_spaces(Folder.search_space_id, search_space_id),
+            Folder.owner_thread_id.is_(None),
+        )
+    )
+
+
 def linked_folder_ids_subquery(search_space_id: int | Select | list[int]):
     """Selectable yielding every folder id readable via a link from the given space(s).
 
@@ -108,9 +162,10 @@ def linked_folder_ids_subquery(search_space_id: int | Select | list[int]):
     retroactively sever links that were already granted. This matches the
     ``SearchSpaceInvite`` precedent, where a used-up invite does not evict members.
 
-    The roots also include :func:`_admin_visible_roots`, so for a system admin
-    "readable via a link" means "readable without owning it" — linked, or a
-    non-admin user's folder.
+    The roots also include :func:`_admin_visible_roots` and
+    :func:`_group_granted_roots`, so "readable via a link" really means "readable
+    without owning it" — linked by token, granted to one of the viewer's user
+    groups, or (for a system admin) belonging to any non-admin user.
 
     Returns a selectable, not a coroutine, so it can be embedded directly as a
     subquery in an ``IN (...)`` predicate without a second round trip.
@@ -128,7 +183,10 @@ def linked_folder_ids_subquery(search_space_id: int | Select | list[int]):
         )
     )
     admin_roots = _admin_visible_roots(search_space_id).subquery("admin_roots")
-    anchor = union_all(link_roots, select(admin_roots.c.id)).subquery("linked_roots")
+    group_roots = _group_granted_roots(search_space_id).subquery("group_roots")
+    anchor = union_all(
+        link_roots, select(admin_roots.c.id), select(group_roots.c.id)
+    ).subquery("linked_roots")
 
     roots = select(anchor.c.id).cte("linked_folders", recursive=True)
     descendants = select(Folder.id).join(roots, Folder.parent_id == roots.c.id)
@@ -162,7 +220,7 @@ async def user_can_read_via_link(
 
 async def live_link_fingerprint(
     session: AsyncSession, search_space_id: int
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, int, int]:
     """Cheap value that changes whenever this space's live link set changes.
 
     Cache keys over the workspace tree must include this. Links are created and
@@ -175,7 +233,9 @@ async def live_link_fingerprint(
     ``(count, max_id)`` moves on import (both) and on revoke or expiry (count
     drops, since liveness is part of the query). The second pair does the same
     for an admin's view of user folders: a new upload, a deleted root, or a user
-    promoted to admin moves it.
+    promoted to admin moves it. The third covers group grants, so adding this
+    user to a group — or granting the group another folder — is picked up on the
+    next question rather than after the cache happens to turn over.
     """
     result = await session.execute(
         select(
@@ -204,7 +264,23 @@ async def live_link_fingerprint(
             )
         )
     ).one()
-    return (int(row[0]), int(row[1]), int(admin_row[0]), int(admin_row[1]))
+    group_roots = _group_granted_roots(search_space_id).subquery()
+    group_row = (
+        await session.execute(
+            select(
+                func.count(group_roots.c.id),
+                func.coalesce(func.max(group_roots.c.id), 0),
+            )
+        )
+    ).one()
+    return (
+        int(row[0]),
+        int(row[1]),
+        int(admin_row[0]),
+        int(admin_row[1]),
+        int(group_row[0]),
+        int(group_row[1]),
+    )
 
 
 async def get_linked_folder_roots(
@@ -250,6 +326,28 @@ async def get_admin_visible_roots(
         .order_by(roots.c.owner_email, Folder.name)
     )
     return [(folder, owner_email) for folder, owner_email in result.all()]
+
+
+async def get_group_granted_roots(
+    session: AsyncSession, search_space_id: int
+) -> list[tuple[Folder, str]]:
+    """The roots :func:`_group_granted_roots` grants, each with its group's name.
+
+    Empty unless this space's owner belongs to a group an admin has granted a
+    folder to. The group name is what callers label the mount with: the agent
+    mounts these at ``/documents/_shared/<group>/<name>``, and the web client
+    shows the group as a folder holding them.
+
+    A folder granted to two of the viewer's groups comes back twice, once per
+    group; callers mount it under the first and skip the rest.
+    """
+    roots = _group_granted_roots(search_space_id).subquery()
+    result = await session.execute(
+        select(Folder, roots.c.group_name)
+        .join(roots, roots.c.id == Folder.id)
+        .order_by(roots.c.group_name, Folder.name)
+    )
+    return [(folder, group_name) for folder, group_name in result.all()]
 
 
 async def get_linked_folder_ids(

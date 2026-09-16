@@ -264,6 +264,10 @@
   }
   .arow .grow { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
   .arow .sub { color: var(--muted); font-size: 12px; }
+  .arow.on { background: var(--sel, rgba(127,127,127,.12)); }
+  #adminGroups { flex: 1; min-width: 0; overflow: auto; }
+  #groupDetail h4 { margin: 14px 0 4px; }
+  #groupDetail select { max-width: 100%; }
   .badge {
     font-size: 10px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px;
     border-radius: 4px; border: 1px solid var(--line); color: var(--muted);
@@ -418,6 +422,7 @@
     <span class="t">System admin</span>
     <nav class="tabs">
       <button data-tab="users" class="on">Users</button>
+      <button data-tab="groups">User groups</button>
       <button data-tab="shares">Folder shares</button>
       <button data-tab="links">Imported links</button>
     </nav>
@@ -471,6 +476,18 @@
           </table>
         </div>
         <aside id="userDetail" class="udetail hide"></aside>
+      </div>
+    </section>
+    <section id="tab-groups" class="apane scroll hide">
+      <h3>User groups — everyone in a group reads the folders granted to it</h3>
+      <form id="newGroupForm" class="toolbar" autocomplete="off">
+        <input id="ngName" placeholder="Group name, e.g. Analysts" maxlength="100" required>
+        <input id="ngDesc" class="grow" placeholder="What it is for (optional)" maxlength="500">
+        <button type="submit" class="primary sm">+ New group</button>
+      </form>
+      <div class="asplit">
+        <div id="adminGroups"></div>
+        <aside id="groupDetail" class="udetail hide"></aside>
       </div>
     </section>
     <section id="tab-shares" class="apane scroll hide">
@@ -2132,9 +2149,10 @@ async function promoteFolder(f) {
 
 /* ------------------------------------------------------------ folder tree */
 //
-// One tree for everything a question can read: the space's own folders and —
-// for a system admin — every non-admin user's folders, each user shown as one
-// more folder holding theirs. Imported folders expand the same way under
+// One tree for everything a question can read: the space's own folders, the
+// folders an admin granted to a group you are in (shown under the group's name)
+// and — for a system admin — every non-admin user's folders, each user shown as
+// one more folder holding theirs. Imported folders expand the same way under
 // Imported. The server builds the list from the grant retrieval uses, so the
 // tree can't show a folder a question can't read, or hide one it can.
 //
@@ -2145,11 +2163,12 @@ let treeNodes = [];              // FolderTreeNode[] from /folder-tree
 const openNodes = new Set();     // keys of expanded rows, kept across re-renders
 const docCache = new Map();      // folder id -> its documents; dropped on every reload
 
-const ORIGIN_ORDER = { own: 0, linked: 1, user: 2 };
+const ORIGIN_ORDER = { own: 0, linked: 1, group: 2, user: 3 };
 
 /** How a folder is named outside the tree — in the scope chip and in /scope. */
 const folderLabel = (n) =>
   n.origin === "user" ? `${n.owner_email}/${n.name}`
+  : n.origin === "group" ? `${n.group_name}/${n.name}`
   : n.origin === "linked" ? `${n.name} (imported)`
   : n.name;
 
@@ -2317,21 +2336,26 @@ function fileNode(d, depth) {
 }
 
 /**
- * A user, as a system admin sees them: one more folder, holding that user's
- * folders. Its checkbox scopes a question to all of them at once.
+ * A grouping row: one more folder holding several read-only roots, with a
+ * checkbox that scopes a question to all of them at once.
+ *
+ * Two kinds use it. `user` is a user as a system admin sees them, holding that
+ * user's folders. `group` is a user group you belong to, holding the folders an
+ * admin granted it — the shared documents everyone in the group reads.
  */
-function userNode(email, roots) {
+function groupingNode(kind, name, roots) {
+  const owned = kind === "user" ? `${name}'s folders` : `the ${name} group's folders`;
   const { wrap, row, label } = treeRow({
-    key: `u:${email}`, depth: 0, name: email,
+    key: `${kind}:${name}`, depth: 0, name,
     children: async () => roots.map((r) => folderNode(r, 1)),
   });
   row.classList.add("group");
-  label.title = `${email}'s folders — read-only`;
+  label.title = `${owned} — read-only`;
   row.insertBefore(scopePick(
     roots.map((r) => r.id),
     Object.fromEntries(roots.map((r) => [r.id, folderLabel(r)])),
-    `Tick to ask questions only inside ${email}'s folders.`), label);
-  row.append(mk("span", "badge", "user"));
+    `Tick to ask questions only inside ${owned}.`), label);
+  row.append(mk("span", "badge", kind === "user" ? "user" : "group"));
   return wrap;
 }
 
@@ -2348,17 +2372,25 @@ async function renderFolders() {
   box.replaceChildren();
 
   const own = treeNodes.filter((n) => n.origin === "own" && n.parent_id == null).sort(byName);
-  const users = new Map();
-  for (const n of treeNodes.filter((n) => n.origin === "user" && n.parent_id == null).sort(byName)) {
-    if (!users.has(n.owner_email)) users.set(n.owner_email, []);
-    users.get(n.owner_email).push(n);
-  }
+  // Roots of a foreign origin, bucketed by the name they hang under: the owner's
+  // email for a user, the group's name for a grant.
+  const bucket = (origin, key) => {
+    const map = new Map();
+    for (const n of treeNodes.filter((n) => n.origin === origin && n.parent_id == null).sort(byName)) {
+      if (!map.has(n[key])) map.set(n[key], []);
+      map.get(n[key]).push(n);
+    }
+    return map;
+  };
+  const groups = bucket("group", "group_name");
+  const users = bucket("user", "owner_email");
 
-  if (!own.length && !users.size) {
+  if (!own.length && !groups.size && !users.size) {
     box.append(mk("div", "empty", "no folders indexed"));
   } else {
     for (const f of own) box.append(folderNode(f, 0));
-    for (const email of [...users.keys()].sort()) box.append(userNode(email, users.get(email)));
+    for (const name of [...groups.keys()].sort()) box.append(groupingNode("group", name, groups.get(name)));
+    for (const email of [...users.keys()].sort()) box.append(groupingNode("user", email, users.get(email)));
   }
   renderScope();   // ownership changes with the open session, and so does the chip
 }
@@ -2518,13 +2550,16 @@ function showAdminTab(tab) {
   for (const b of document.querySelectorAll("#adminView .tabs button")) {
     b.classList.toggle("on", b.dataset.tab === tab);
   }
-  for (const name of ["users", "shares", "links"]) {
+  for (const name of ["users", "groups", "shares", "links"]) {
     $(`#tab-${name}`).classList.toggle("hide", name !== tab);
   }
 }
 
 async function refreshAdmin() {
-  await Promise.all([loadAdminUsers(), renderAdminShares(), renderAdminLinks()]);
+  // Users first: the groups pane builds its "add member" and "grant a folder
+  // from…" pickers out of adminUsers.
+  await loadAdminUsers();
+  await Promise.all([renderAdminGroups(), renderAdminShares(), renderAdminLinks()]);
 }
 
 function makeBtn(label, cls, onClick) {
@@ -2783,6 +2818,155 @@ async function renderUserFolders(user, box) {
   walk(null, 0);
 }
 
+/* ------------------------------------------------------------- user groups */
+//
+// A group is a named set of users plus a set of folder grants. Membership by
+// itself grants nothing: it is the grants that make folders readable, and only
+// an admin can make one. That is why two people in the same group still cannot
+// see each other's uploads — only what was granted to the group.
+
+let selectedGroupId = null;
+
+async function renderAdminGroups() {
+  const box = $("#adminGroups");
+  box.textContent = "Loading…";
+  const groups = await adminApi("GET", "/groups") ?? [];
+  if (!groups.some((g) => g.id === selectedGroupId)) selectedGroupId = null;
+  box.replaceChildren();
+  if (!groups.length) box.innerHTML = '<div class="empty">no groups yet</div>';
+
+  for (const g of groups) {
+    const row = mk("div", "arow");
+    if (g.id === selectedGroupId) row.classList.add("on");
+    const label = mk("div", "grow");
+    label.append(mk("span", "", g.name));
+    label.append(mk("div", "sub",
+      `${g.member_count} member(s) · ${g.folder_count} folder(s)` +
+      (g.description ? ` · ${g.description}` : "")));
+    label.style.cursor = "pointer";
+    label.onclick = () => {
+      selectedGroupId = selectedGroupId === g.id ? null : g.id;
+      guard(renderAdminGroups);
+    };
+    row.append(label);
+    row.append(makeBtn("Rename", "", () => {
+      const name = prompt(`Rename "${g.name}" to:`, g.name);
+      if (name && name.trim() && name !== g.name) {
+        guard(async () => {
+          await adminApi("PATCH", `/groups/${g.id}`, { json: { name: name.trim() } });
+          await renderAdminGroups();
+        });
+      }
+    }));
+    row.append(makeBtn("Delete", "danger", () => {
+      if (confirm(`Delete the group "${g.name}"?\n\nIts ${g.member_count} member(s) lose access to its ${g.folder_count} granted folder(s) at once. No documents are deleted.`)) {
+        guard(async () => {
+          await adminApi("DELETE", `/groups/${g.id}`);
+          selectedGroupId = null;
+          toast("Group deleted.");
+          await renderAdminGroups();
+        });
+      }
+    }));
+    box.append(row);
+  }
+  await renderGroupDetail();
+}
+
+/** The selected group: who is in it, and which folders it reads. */
+async function renderGroupDetail() {
+  const pane = $("#groupDetail");
+  pane.classList.toggle("hide", selectedGroupId == null);
+  pane.replaceChildren();
+  if (selectedGroupId == null) return;
+
+  const [members, folders] = await Promise.all([
+    adminApi("GET", `/groups/${selectedGroupId}/members`),
+    adminApi("GET", `/groups/${selectedGroupId}/folders`),
+  ]);
+  // Members.
+  pane.append(mk("h4", "", "Members"));
+  for (const m of members ?? []) {
+    const row = mk("div", "arow");
+    row.append(mk("div", "grow", m.display_name ? `${m.display_name} <${m.email}>` : m.email));
+    if (m.is_superuser) row.append(badge("admin", "admin"));
+    row.append(makeBtn("Remove", "danger", () => guard(async () => {
+      await adminApi("DELETE", `/groups/${selectedGroupId}/members/${m.user_id}`);
+      await renderAdminGroups();
+    })));
+    pane.append(row);
+  }
+  const memberIds = new Set((members ?? []).map((m) => m.user_id));
+  pane.append(pickerRow("Add member…", adminUsers
+    .filter((u) => !memberIds.has(u.id))
+    .map((u) => ({ value: u.id, label: u.email })),
+    (userId) => guard(async () => {
+      await adminApi("POST", `/groups/${selectedGroupId}/members`, { json: { user_id: userId } });
+      await renderAdminGroups();
+    })));
+
+  // Grants. The folder picker lists one user's folders at a time — including
+  // this admin's own, which is where "general" documents live.
+  pane.append(mk("h4", "", "Folders this group reads"));
+  pane.append(mk("div", "sub",
+    "Read-only for every member, subfolders included. Upload general documents " +
+    "into one of your own folders, then grant it here."));
+  for (const f of folders ?? []) {
+    const row = mk("div", "arow");
+    row.append(mk("div", "grow", f.name));
+    row.append(mk("span", "sub", `${f.owner_email ?? "—"} · ${f.document_count} doc(s)`));
+    row.append(makeBtn("Revoke", "danger", () => guard(async () => {
+      await adminApi("DELETE", `/groups/${selectedGroupId}/folders/${f.folder_id}`);
+      toast("Revoked — members lose it on their next question.");
+      await renderAdminGroups();
+    })));
+    pane.append(row);
+  }
+
+  const granted = new Set((folders ?? []).map((f) => f.folder_id));
+  const ownerPick = mk("select");
+  ownerPick.append(new Option("Grant a folder from…", ""));
+  for (const u of adminUsers) {
+    ownerPick.append(new Option(u.email === state.email ? `${u.email} (you)` : u.email, u.id));
+  }
+  const folderPick = mk("select");
+  folderPick.classList.add("hide");
+  ownerPick.onchange = () => guard(async () => {
+    folderPick.replaceChildren();
+    folderPick.classList.toggle("hide", !ownerPick.value);
+    if (!ownerPick.value) return;
+    const all = await adminApi("GET", `/users/${ownerPick.value}/folders`) ?? [];
+    // A session-scoped folder is invisible even to its owner's other chats, so
+    // the server refuses to grant one; don't offer it.
+    const pickable = all.filter((f) => f.owner_thread_id == null && !granted.has(f.id));
+    folderPick.append(new Option(pickable.length ? "Pick a folder…" : "no grantable folders", ""));
+    for (const f of pickable) folderPick.append(new Option(f.name, f.id));
+  });
+  folderPick.onchange = () => {
+    if (!folderPick.value) return;
+    guard(async () => {
+      const r = await adminApi("POST", `/groups/${selectedGroupId}/folders`,
+        { json: { folder_id: Number(folderPick.value) } });
+      toast(r?.message ?? "Granted.");
+      await renderAdminGroups();
+    });
+  };
+  const picker = mk("div", "arow");
+  picker.append(ownerPick, folderPick);
+  pane.append(picker);
+}
+
+/** A one-shot <select> that fires `onPick` and resets itself. */
+function pickerRow(placeholder, options, onPick) {
+  const sel = mk("select");
+  sel.append(new Option(options.length ? placeholder : "no one left to add", ""));
+  for (const o of options) sel.append(new Option(o.label, o.value));
+  sel.onchange = () => { if (sel.value) { const v = sel.value; sel.value = ""; onPick(v); } };
+  const row = mk("div", "arow");
+  row.append(sel);
+  return row;
+}
+
 async function renderAdminShares() {
   const box = $("#adminShares");
   box.textContent = "Loading…";
@@ -3006,6 +3190,22 @@ function init() {
       $("#newUserForm").classList.add("hide");
       selectedUserId = made.id;
       await loadAdminUsers();
+    });
+  };
+
+  $("#newGroupForm").onsubmit = (e) => {
+    e.preventDefault();
+    guard(async () => {
+      const made = await adminApi("POST", "/groups", {
+        json: {
+          name: $("#ngName").value.trim(),
+          description: $("#ngDesc").value.trim() || undefined,
+        },
+      });
+      $("#newGroupForm").reset();
+      selectedGroupId = made.id;
+      toast(`Created ${made.name}. Add members, then grant it the folders they should read.`, "ok", 9000);
+      await renderAdminGroups();
     });
   };
 

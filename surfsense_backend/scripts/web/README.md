@@ -220,6 +220,30 @@ those emails are promoted on their next login. After that, manage admins from th
 panel. The panel and its API bypass the per-user search-space isolation the rest
 of the app enforces — that is the point of an admin — so grant it sparingly.
 
+### User groups
+
+The panel's **User groups** tab is how shared documents reach a team without
+anyone passing tokens around. A group is a name, a set of members, and a set of
+folders granted to it. Every member reads every granted folder — the whole
+subtree, read-only — from their next question onward, with no token to accept.
+
+To publish "general" documents: upload them into one of your own folders as
+usual, create a group, add its members, then grant it that folder from the
+group's **Grant a folder from…** picker (your own account is in the list). The
+folder appears in each member's sidebar under the group's name, and the agent
+mounts it at `/documents/_shared/<group>/…` alongside their own files, so
+questions and reports draw on it like anything else.
+
+Membership by itself grants nothing. Two people in the same group still cannot
+see each other's uploads — only what was explicitly granted to the group — so a
+group is safe to use for "everyone in the unit" without turning personal folders
+into a shared drive. To hand one specific folder to one specific person, mint a
+share link as before.
+
+Removing a member, revoking a grant, or deleting the group takes effect on the
+affected user's very next question; nothing is copied, so nothing is left behind
+and no documents are deleted.
+
 ## Answers, citations and sessions
 
 Three backend behaviours drive most of the client's non-obvious logic.

@@ -25,6 +25,7 @@ from app.schemas import (
 from app.services.folder_scope_service import promote_folder_to_space
 from app.services.folder_sharing_service import (
     get_admin_visible_roots,
+    get_group_granted_roots,
     get_linked_folder_ids,
     is_folder_linked,
     linked_folder_ids_subquery,
@@ -141,9 +142,11 @@ class FolderTreeNode(BaseModel):
     parent_id: int | None
     owner_thread_id: int | None = None
     # own: this space's folder. linked: read through a share link. user: a
-    # non-admin user's folder, read by a system admin.
-    origin: Literal["own", "linked", "user"]
+    # non-admin user's folder, read by a system admin. group: granted by an admin
+    # to a user group this space's owner belongs to.
+    origin: Literal["own", "linked", "user", "group"]
     owner_email: str | None = None  # set when origin == "user"
+    group_name: str | None = None  # set when origin == "group"
     document_count: int = 0  # documents directly inside, not the whole subtree
 
 
@@ -166,10 +169,11 @@ async def get_folder_tree(
 ):
     """Every folder this space can read, flat, for the client to nest by ``parent_id``.
 
-    The space's own folders, the subtrees it holds a live share link to, and —
-    for a system admin — every non-admin user's space-wide folders. The foreign
-    part is exactly ``linked_folder_ids_subquery``, the grant retrieval uses, so
-    the tree never shows a folder a question can't read or hides one it can.
+    The space's own folders, the subtrees it holds a live share link to, the
+    folders an admin granted to a user group its owner belongs to, and — for a
+    system admin — every non-admin user's space-wide folders. The foreign part is
+    exactly ``linked_folder_ids_subquery``, the grant retrieval uses, so the tree
+    never shows a folder a question can't read or hides one it can.
     Requires DOCUMENTS_READ.
     """
     await check_permission(
@@ -201,6 +205,11 @@ async def get_folder_tree(
         folder.id: email
         for folder, email in await get_admin_visible_roots(session, search_space_id)
     }
+    # A folder granted to two of the viewer's groups is labelled by the first,
+    # matching the agent's mount, which also shows it once.
+    group_roots: dict[int, str] = {}
+    for folder, group_name in await get_group_granted_roots(session, search_space_id):
+        group_roots.setdefault(folder.id, group_name)
 
     counts = dict(
         (
@@ -244,15 +253,18 @@ async def get_folder_tree(
         return folder
 
     for f in foreign:
-        owner_email = user_roots.get(mount_root(f).id)
+        root_id = mount_root(f).id
+        owner_email = user_roots.get(root_id)
+        group_name = None if owner_email else group_roots.get(root_id)
         nodes.append(
             FolderTreeNode(
                 id=f.id,
                 name=f.name,
                 parent_id=f.parent_id if f.parent_id in by_id else None,
                 owner_thread_id=f.owner_thread_id,
-                origin="user" if owner_email else "linked",
+                origin="user" if owner_email else "group" if group_name else "linked",
                 owner_email=owner_email,
+                group_name=group_name,
                 document_count=counts.get(f.id, 0),
             )
         )

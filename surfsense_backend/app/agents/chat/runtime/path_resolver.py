@@ -24,6 +24,7 @@ from app.db import Document, DocumentType, Folder
 from app.services.folder_sharing_service import (
     SHARED_PREFIX,
     get_admin_visible_roots,
+    get_group_granted_roots,
     get_linked_folder_roots,
 )
 from app.utils.document_converters import generate_unique_identifier_hash
@@ -295,11 +296,14 @@ async def _add_linked_folder_paths(
 
     For a system admin's space, every non-admin user's root folders are mounted
     too, one level deeper under the owner's email:
-    ``/documents/_shared/<email>/Research``.
+    ``/documents/_shared/<email>/Research``. Folders an admin granted to one of
+    this user's groups mount the same way, under the group's name:
+    ``/documents/_shared/Analysts/General``.
     """
     roots = await get_linked_folder_roots(session, search_space_id)
     user_roots = await get_admin_visible_roots(session, search_space_id)
-    if not roots and not user_roots:
+    group_roots = await get_group_granted_roots(session, search_space_id)
+    if not roots and not user_roots and not group_roots:
         return set()
 
     shared_root = f"{DOCUMENTS_ROOT}/{SHARED_PREFIX}"
@@ -319,26 +323,28 @@ async def _add_linked_folder_paths(
         linked_ids.add(root.id)
         frontier.append((root.id, path))
 
-    # An admin's view of user folders has no link row: each user's roots go one
-    # level deeper, under their email, so the user reads as a folder holding
-    # their uploads. Staying inside the _shared mount is what keeps every write
-    # tool (mkdir, rm, rmdir, move, write, edit) refusing them.
-    names_by_user: dict[str, set[str]] = {}
-    for root, owner_email in user_roots:
-        if root.id in linked_ids:  # also reachable through a link; mount it once
-            continue
-        user_segment = safe_folder_segment(owner_email)
-        if user_segment in used_names:  # a linked root that happens to share the name
-            user_segment = f"{user_segment} (user)"
-        taken = names_by_user.setdefault(user_segment, set())
-        segment = safe_folder_segment(str(root.name))
-        if segment in taken:
-            segment = f"{segment} ({root.id})"
-        taken.add(segment)
-        path = f"{shared_root}/{user_segment}/{segment}"
-        cache[root.id] = path
-        linked_ids.add(root.id)
-        frontier.append((root.id, path))
+    # An admin's view of user folders, and folders granted to a group this user
+    # belongs to, have no link row: both nest one level deeper — under the
+    # owner's email, or under the group's name — so the grouping reads as a
+    # folder holding them. Staying inside the _shared mount is what keeps every
+    # write tool (mkdir, rm, rmdir, move, write, edit) refusing them.
+    names_by_group: dict[str, set[str]] = {}
+    for label, batch in (("user", user_roots), ("group", group_roots)):
+        for root, group_label in batch:
+            if root.id in linked_ids:  # already mounted; mount it once
+                continue
+            outer = safe_folder_segment(group_label)
+            if outer in used_names:  # a linked root that happens to share the name
+                outer = f"{outer} ({label})"
+            taken = names_by_group.setdefault(outer, set())
+            segment = safe_folder_segment(str(root.name))
+            if segment in taken:
+                segment = f"{segment} ({root.id})"
+            taken.add(segment)
+            path = f"{shared_root}/{outer}/{segment}"
+            cache[root.id] = path
+            linked_ids.add(root.id)
+            frontier.append((root.id, path))
 
     # Breadth-first over the sharer's descendants.
     while frontier:

@@ -11,6 +11,13 @@ The one capability normal sharing lacks is a *hard* revoke: a user's
 resolving). The admin's ``DELETE /admin/folder-shares/{id}`` also deletes every
 ``FolderLink``, so the shared folder is genuinely removed from every importer's
 knowledge base, not merely silenced.
+
+The other admin-only capability is *user groups*: a named set of users, plus
+folder grants against it. Granting a folder to a group hands every member
+read-only access with no token and no acceptance step — the way an admin
+publishes "general" documents to a team. Membership itself grants nothing:
+two members of a group still cannot see each other's personal folders unless a
+share token or a grant says so. See ``app.services.folder_sharing_service``.
 """
 
 import logging
@@ -29,10 +36,13 @@ from app.auth.context import AuthContext
 from app.db import (
     Document,
     Folder,
+    FolderGroupGrant,
     FolderLink,
     SearchSpace,
     SharedFolder,
     User,
+    UserGroup,
+    UserGroupMembership,
     get_async_session,
 )
 from app.schemas.users import UserCreate
@@ -106,6 +116,52 @@ class AdminShareRead(BaseModel):
     revoked_at: datetime | None = None
     link_count: int = 0
     created_at: datetime
+
+
+class AdminGroupRead(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    created_by_id: str | None = None
+    member_count: int = 0
+    folder_count: int = 0
+    created_at: datetime
+
+
+class AdminGroupWrite(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class AdminGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    # An empty string clears the description.
+    description: str | None = Field(default=None, max_length=500)
+
+
+class AdminGroupMemberRead(BaseModel):
+    user_id: str
+    email: str
+    display_name: str | None = None
+    is_superuser: bool = False
+    added_at: datetime
+
+
+class AdminGroupMemberAdd(BaseModel):
+    user_id: uuid.UUID
+
+
+class AdminGroupFolderRead(BaseModel):
+    folder_id: int
+    name: str
+    search_space_id: int
+    owner_email: str | None = None
+    document_count: int = 0
+    granted_at: datetime
+
+
+class AdminGroupFolderAdd(BaseModel):
+    folder_id: int
 
 
 class AdminLinkRead(BaseModel):
@@ -441,6 +497,329 @@ async def delete_folder(
         "message": "Folder deletion started",
         "documents_queued_for_deletion": queued,
     }
+
+
+# ── Groups ──────────────────────────────────────────────────────────
+
+
+async def _get_group(session: AsyncSession, group_id: int) -> UserGroup:
+    group = await session.get(UserGroup, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return group
+
+
+def _group_counts():
+    """Member and folder-grant counts for a group, as correlated scalar subqueries."""
+    members = select(func.count(UserGroupMembership.id)).where(
+        UserGroupMembership.group_id == UserGroup.id
+    )
+    folders = select(func.count(FolderGroupGrant.id)).where(
+        FolderGroupGrant.group_id == UserGroup.id
+    )
+    return [
+        q.correlate_except(UserGroupMembership, FolderGroupGrant).scalar_subquery()
+        for q in (members, folders)
+    ]
+
+
+def _group_read(group: UserGroup, members: int = 0, folders: int = 0) -> AdminGroupRead:
+    return AdminGroupRead(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        created_by_id=str(group.created_by_id) if group.created_by_id else None,
+        member_count=members,
+        folder_count=folders,
+        created_at=group.created_at,
+    )
+
+
+@router.get("/groups", response_model=list[AdminGroupRead])
+async def list_groups(
+    session: AsyncSession = Depends(get_async_session),
+    _: AuthContext = Depends(require_admin),
+):
+    """Every user group, with how many members it has and how many folders it holds."""
+    rows = (
+        await session.execute(
+            select(UserGroup, *_group_counts()).order_by(UserGroup.name)
+        )
+    ).all()
+    return [_group_read(g, members, folders) for g, members, folders in rows]
+
+
+@router.post("/groups", response_model=AdminGroupRead, status_code=201)
+async def create_group(
+    body: AdminGroupWrite,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Create an empty user group. Names are unique across the deployment."""
+    group = UserGroup(
+        name=body.name.strip(),
+        description=(body.description or "").strip() or None,
+        created_by_id=auth.user.id,
+    )
+    session.add(group)
+    try:
+        await session.commit()
+    except IntegrityError as err:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="A group with this name already exists"
+        ) from err
+    await session.refresh(group)
+    logger.info(f"Admin {auth.user.email} created group '{group.name}'")
+    return _group_read(group)
+
+
+@router.patch("/groups/{group_id}", response_model=AdminGroupRead)
+async def update_group(
+    group_id: int,
+    body: AdminGroupUpdate,
+    session: AsyncSession = Depends(get_async_session),
+    _: AuthContext = Depends(require_admin),
+):
+    """Rename a group or change its description. Members and grants are untouched."""
+    group = await _get_group(session, group_id)
+    if body.name is not None:
+        group.name = body.name.strip()
+    if body.description is not None:
+        group.description = body.description.strip() or None
+    try:
+        await session.commit()
+    except IntegrityError as err:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="A group with this name already exists"
+        ) from err
+    await session.refresh(group)
+    members, folders = (
+        await session.execute(select(*_group_counts()).where(UserGroup.id == group_id))
+    ).one()
+    return _group_read(group, members, folders)
+
+
+@router.delete("/groups/{group_id}")
+async def delete_group(
+    group_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Delete a group; its memberships and folder grants go with it (CASCADE).
+
+    No documents are touched — a grant was only ever a read-through, so deleting
+    it removes the members' access and nothing else. Access ends on their next
+    query, since membership and grants are read per query.
+    """
+    group = await _get_group(session, group_id)
+    name = group.name
+    await session.delete(group)
+    await session.commit()
+    logger.info(f"Admin {auth.user.email} deleted group '{name}'")
+    return {"message": f"Deleted group {name}"}
+
+
+@router.get("/groups/{group_id}/members", response_model=list[AdminGroupMemberRead])
+async def list_group_members(
+    group_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    _: AuthContext = Depends(require_admin),
+):
+    """Who is in this group."""
+    await _get_group(session, group_id)
+    rows = (
+        await session.execute(
+            select(UserGroupMembership, User)
+            .join(User, User.id == UserGroupMembership.user_id)
+            .where(UserGroupMembership.group_id == group_id)
+            .order_by(User.email)
+        )
+    ).all()
+    return [
+        AdminGroupMemberRead(
+            user_id=str(user.id),
+            email=user.email,
+            display_name=getattr(user, "display_name", None),
+            is_superuser=bool(user.is_superuser),
+            added_at=membership.created_at,
+        )
+        for membership, user in rows
+    ]
+
+
+@router.post("/groups/{group_id}/members", status_code=201)
+async def add_group_member(
+    group_id: int,
+    body: AdminGroupMemberAdd,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Add a user to a group. They see the group's folders on their next question.
+
+    Adding someone twice is a no-op rather than an error, so a double-click in
+    the admin panel does not surface a failure.
+    """
+    group = await _get_group(session, group_id)
+    user = await session.get(User, body.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    session.add(
+        UserGroupMembership(
+            group_id=group_id, user_id=user.id, added_by_id=auth.user.id
+        )
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        return {"message": f"{user.email} is already in {group.name}"}
+    logger.info(f"Admin {auth.user.email} added {user.email} to group '{group.name}'")
+    return {"message": f"Added {user.email} to {group.name}"}
+
+
+@router.delete("/groups/{group_id}/members/{user_id}")
+async def remove_group_member(
+    group_id: int,
+    user_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Remove a user from a group; the group's folders leave their view at once."""
+    await _get_group(session, group_id)
+    removed = (
+        await session.execute(
+            delete(UserGroupMembership).where(
+                UserGroupMembership.group_id == group_id,
+                UserGroupMembership.user_id == user_id,
+            )
+        )
+    ).rowcount
+    if not removed:
+        raise HTTPException(status_code=404, detail="User is not in this group")
+    await session.commit()
+    logger.info(f"Admin {auth.user.email} removed {user_id} from group #{group_id}")
+    return {"message": "Removed from group"}
+
+
+@router.get("/groups/{group_id}/folders", response_model=list[AdminGroupFolderRead])
+async def list_group_folders(
+    group_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    _: AuthContext = Depends(require_admin),
+):
+    """Folders granted to this group, with their owner and document count.
+
+    The count is of documents directly inside the granted folder. Subfolders are
+    granted too — the grant covers the whole subtree — but the shallow count is
+    what the folder tree shows per node, and it keeps this route cheap.
+    """
+    await _get_group(session, group_id)
+    documents = (
+        select(func.count(Document.id))
+        .where(Document.folder_id == Folder.id)
+        .correlate_except(Document)
+        .scalar_subquery()
+    )
+    rows = (
+        await session.execute(
+            select(FolderGroupGrant, Folder, User.email, documents)
+            .join(Folder, Folder.id == FolderGroupGrant.folder_id)
+            .outerjoin(SearchSpace, SearchSpace.id == Folder.search_space_id)
+            .outerjoin(User, User.id == SearchSpace.user_id)
+            .where(FolderGroupGrant.group_id == group_id)
+            .order_by(Folder.name)
+        )
+    ).all()
+    return [
+        AdminGroupFolderRead(
+            folder_id=folder.id,
+            name=folder.name,
+            search_space_id=folder.search_space_id,
+            owner_email=owner_email,
+            document_count=document_count,
+            granted_at=grant.created_at,
+        )
+        for grant, folder, owner_email, document_count in rows
+    ]
+
+
+@router.post("/groups/{group_id}/folders", status_code=201)
+async def grant_folder_to_group(
+    group_id: int,
+    body: AdminGroupFolderAdd,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Grant a folder subtree to a group: every member reads it, read-only.
+
+    This is how "general" documents reach a team — the admin uploads them into
+    one of their own folders and grants that folder here. Any folder an admin can
+    see may be granted, a user's included; granting is always a deliberate admin
+    act, which is why group membership alone never exposes anyone's uploads.
+
+    Session-scoped folders are refused for the same reason sharing refuses them:
+    they are invisible even to their owner's other chats, so handing one to a
+    group would widen it past what its owner sees. Promote it first.
+    """
+    group = await _get_group(session, group_id)
+    folder = await session.get(Folder, body.folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if folder.owner_thread_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This folder is scoped to a single chat session. Promote it to "
+                "space-wide before granting it to a group."
+            ),
+        )
+
+    session.add(
+        FolderGroupGrant(
+            group_id=group_id, folder_id=folder.id, granted_by_id=auth.user.id
+        )
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        return {"message": f"'{folder.name}' is already granted to {group.name}"}
+    logger.info(
+        f"Admin {auth.user.email} granted folder #{folder.id} to group '{group.name}'"
+    )
+    return {"message": f"Granted '{folder.name}' to {group.name}"}
+
+
+@router.delete("/groups/{group_id}/folders/{folder_id}")
+async def revoke_folder_from_group(
+    group_id: int,
+    folder_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Revoke a folder grant. Members lose the folder on their next query.
+
+    Nothing is deleted but the grant row: the folder and its documents stay where
+    they are, owned by whoever owned them.
+    """
+    removed = (
+        await session.execute(
+            delete(FolderGroupGrant).where(
+                FolderGroupGrant.group_id == group_id,
+                FolderGroupGrant.folder_id == folder_id,
+            )
+        )
+    ).rowcount
+    if not removed:
+        raise HTTPException(status_code=404, detail="Grant not found")
+    await session.commit()
+    logger.info(
+        f"Admin {auth.user.email} revoked folder #{folder_id} from group #{group_id}"
+    )
+    return {"message": "Folder revoked from group"}
 
 
 # ── Shares ──────────────────────────────────────────────────────────────────
