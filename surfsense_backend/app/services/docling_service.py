@@ -159,7 +159,7 @@ class DoclingService:
             if hasattr(result, "document") and result.document:
                 # Try different export methods (version compatibility)
                 if hasattr(result.document, "export_to_markdown"):
-                    content = result.document.export_to_markdown()
+                    content = result.document.export_to_markdown(compact_tables=True)
                     logger.info("📄 Used export_to_markdown method")
                 elif hasattr(result.document, "to_markdown"):
                     content = result.document.to_markdown()
