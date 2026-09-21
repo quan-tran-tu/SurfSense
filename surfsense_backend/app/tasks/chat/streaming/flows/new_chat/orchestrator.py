@@ -181,6 +181,7 @@ async def stream_new_chat(
         filesystem_mode=fs_mode,
         client_platform=fs_platform,
         agent_mode=chat_agent_mode,
+        user_query=user_query,
     )
     log_file_contract("turn_start", stream_result)
     _perf_log.info(
@@ -901,6 +902,7 @@ async def stream_new_chat(
 
         # Break circular refs held by the agent graph, tools, and LLM
         # wrappers so the GC can reclaim them in a single pass.
+        answer_text = stream_result.accumulated_text if stream_result else None
         agent = llm = connector_service = None
         input_state = stream_result = None
         session = None
@@ -914,4 +916,5 @@ async def stream_new_chat(
             flow=flow,
             chat_error_category=chat_error_category,
             duration_seconds=time.perf_counter() - _t_total,
+            answer_text=answer_text,
         )

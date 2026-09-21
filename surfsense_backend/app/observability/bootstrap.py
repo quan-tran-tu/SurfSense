@@ -25,6 +25,7 @@ _PSYCOPG_INSTRUMENTED = False
 _REDIS_INSTRUMENTED = False
 _HTTPX_INSTRUMENTED = False
 _CELERY_INSTRUMENTED = False
+_LANGCHAIN_INSTRUMENTED = False
 
 _TRACER_PROVIDER: Any | None = None
 _METER_PROVIDER: Any | None = None
@@ -113,7 +114,15 @@ def _metric_exporter():
     return OTLPMetricExporter(endpoint=endpoint) if endpoint else OTLPMetricExporter()
 
 
+def _disabled_instrumentations() -> set[str]:
+    """Names from the spec's OTEL_PYTHON_DISABLED_INSTRUMENTATIONS (comma list)."""
+    raw = os.environ.get("OTEL_PYTHON_DISABLED_INSTRUMENTATIONS", "")
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
 def _safe_instrument(name: str, instrument: Any) -> bool:
+    if name.lower() in _disabled_instrumentations():
+        return False
     try:
         instrument()
     except Exception:
@@ -249,6 +258,26 @@ def instrument_celery() -> None:
         _CELERY_INSTRUMENTED = True
 
 
+def _instrument_langchain() -> None:
+    """Emit OpenInference spans for LangChain/LangGraph runs.
+
+    These carry prompts, completions, tool calls and token counts — the
+    LangSmith-equivalent view — so they land in whatever OTLP backend the
+    exporter points at (e.g. a self-hosted Phoenix) instead of LangSmith.
+    """
+    global _LANGCHAIN_INSTRUMENTED
+    if _LANGCHAIN_INSTRUMENTED:
+        return
+
+    def _run() -> None:
+        from openinference.instrumentation.langchain import LangChainInstrumentor
+
+        LangChainInstrumentor().instrument()
+
+    if _safe_instrument("LangChain", _run):
+        _LANGCHAIN_INSTRUMENTED = True
+
+
 def _instrument_libraries(app: Any | None) -> None:
     _instrument_fastapi(app)
     _instrument_sqlalchemy()
@@ -256,6 +285,7 @@ def _instrument_libraries(app: Any | None) -> None:
     _instrument_redis()
     _instrument_httpx()
     instrument_celery()
+    _instrument_langchain()
 
 
 def init_traces(app: Any | None = None) -> None:
@@ -358,7 +388,9 @@ def init_otel(
 
     if traces:
         init_traces(app)
-    if metrics:
+    # Honor the spec's OTEL_METRICS_EXPORTER=none for trace-only backends
+    # such as Phoenix, which reject OTLP metrics.
+    if metrics and os.environ.get("OTEL_METRICS_EXPORTER", "").lower() != "none":
         init_metrics()
     if logs:
         init_logs()

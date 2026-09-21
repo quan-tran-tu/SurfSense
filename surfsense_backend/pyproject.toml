@@ -86,6 +86,7 @@ dependencies = [
     "opentelemetry-instrumentation-httpx>=0.61b0",
     "opentelemetry-instrumentation-celery>=0.61b0",
     "opentelemetry-instrumentation-logging>=0.61b0",
+    "openinference-instrumentation-langchain>=0.1.50",
     "python-telegram-bot>=22.7",
     "croniter>=2.0.0",
     "scrapling[fetchers]>=0.4.9",

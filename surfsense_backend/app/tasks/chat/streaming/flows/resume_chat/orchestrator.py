@@ -608,6 +608,7 @@ async def stream_resume_chat(
                 end_turn(str(chat_id))
                 _perf_log.info("[stream_resume] end_turn cleanup (chat_id=%s)", chat_id)
 
+        answer_text = stream_result.accumulated_text if stream_result else None
         agent = llm = connector_service = None
         stream_result = None
         session = None
@@ -621,4 +622,5 @@ async def stream_resume_chat(
             flow="resume",
             chat_error_category=chat_error_category,
             duration_seconds=time.perf_counter() - _t_total,
+            answer_text=answer_text,
         )

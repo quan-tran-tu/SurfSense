@@ -19,8 +19,13 @@ def open_chat_request_span(
     filesystem_mode: str,
     client_platform: str,
     agent_mode: str,
+    user_query: str | None = None,
 ) -> tuple[Any, Any]:
-    """Open the per-request span; returns ``(span_cm, span)`` for finally-close."""
+    """Open the per-request span; returns ``(span_cm, span)`` for finally-close.
+
+    The OpenInference attributes make the span a CHAIN root with the user's
+    question as its input, so trace viewers (Phoenix) list the turn by it.
+    """
     span_cm = ot.chat_request_span(
         chat_id=chat_id,
         search_space_id=search_space_id,
@@ -32,6 +37,11 @@ def open_chat_request_span(
         agent_mode=agent_mode,
     )
     span = span_cm.__enter__()
+    with contextlib.suppress(Exception):
+        span.set_attribute("openinference.span.kind", "CHAIN")
+        span.set_attribute("session.id", str(chat_id))
+        if user_query:
+            span.set_attribute("input.value", user_query)
     return span_cm, span
 
 
@@ -50,10 +60,13 @@ def close_chat_request_span(
     flow: Literal["new", "regenerate", "resume"],
     chat_error_category: str | None,
     duration_seconds: float,
+    answer_text: str | None = None,
 ) -> None:
     """Record metrics + close the span. Swallows errors (finally-block context)."""
     with contextlib.suppress(Exception):
         span.set_attribute("chat.outcome", chat_outcome)
+        if answer_text:
+            span.set_attribute("output.value", answer_text)
         ot_metrics.record_chat_request_duration(
             duration_seconds * 1000,
             flow=flow,

@@ -6846,6 +6846,47 @@ wheels = [
 ]
 
 [[package]]
+name = "openinference-instrumentation"
+version = "0.1.65"
+source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
+dependencies = [
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/c5/42/b0898f2d1663b63d7b9ec565428bfc28593230703a19b16cf3071734fd0d/openinference_instrumentation-0.1.65.tar.gz", hash = "sha256:23022c090780d3470a08f2450e5eee0e89b0fe3a8f2f65c9cd6baefaceff7786" }
+wheels = [
+    { url = "https://repo.huaweicloud.com/repository/pypi/packages/7c/2d/f1d99d17b9b9cb58cb3bc411bd03c517a605deaea93c8bc2fdc1fe223337/openinference_instrumentation-0.1.65-py3-none-any.whl", hash = "sha256:cb620740efe899e84b23c49ddbd6c9c8522a83992c57a23f4f5380932c9cded9" },
+]
+
+[[package]]
+name = "openinference-instrumentation-langchain"
+version = "0.1.76"
+source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
+dependencies = [
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/ce/75/616b2ae54e7a2da3396fec122f29323f8c840afdec452c6c0d86fcefe121/openinference_instrumentation_langchain-0.1.76.tar.gz", hash = "sha256:dbe28e88ae11b5f148b30243af2ff100691d4a9941cff6d492ce61e13be12e5d" }
+wheels = [
+    { url = "https://repo.huaweicloud.com/repository/pypi/packages/e0/81/f797cdc84da0f3b6f9306fc435507583be6fac47ecb79a87607590fec9c4/openinference_instrumentation_langchain-0.1.76-py3-none-any.whl", hash = "sha256:a5fd219508e351899e82b7bdd817f26ad775dfdbf642aaa78a868cdba3e08933" },
+]
+
+[[package]]
+name = "openinference-semantic-conventions"
+version = "0.1.38"
+source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
+sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/ea/a8/b2094f8fb53d9b76c9772e9117c04c13fb089e54cd0f5cdc4e91975410db/openinference_semantic_conventions-0.1.38.tar.gz", hash = "sha256:612b41645c7591f2f6cc0ee9cead94cba395d7cfc5bc9759abb2de6d0cf998d3" }
+wheels = [
+    { url = "https://repo.huaweicloud.com/repository/pypi/packages/76/18/4c4dd2575ce3975b727c6349d26370863b4c8e2dfe83cc3d07fdcd7ff3f6/openinference_semantic_conventions-0.1.38-py3-none-any.whl", hash = "sha256:b747b9eae63c3075edb90f632f52f93b8afed62548519951fbb80253865c53f7" },
+]
+
+[[package]]
 name = "openpyxl"
 version = "3.1.5"
 source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
@@ -9908,6 +9949,7 @@ dependencies = [
     { name = "notion-client" },
     { name = "notion-markdown" },
     { name = "numpy" },
+    { name = "openinference-instrumentation-langchain" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-instrumentation-celery" },
@@ -10026,6 +10068,7 @@ requires-dist = [
     { name = "notion-client", specifier = ">=2.3.0" },
     { name = "notion-markdown", specifier = ">=0.7.0" },
     { name = "numpy", specifier = ">=1.24.0" },
+    { name = "openinference-instrumentation-langchain", specifier = ">=0.1.50" },
     { name = "opentelemetry-api", specifier = ">=1.40.0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.40.0" },
     { name = "opentelemetry-instrumentation-celery", specifier = ">=0.61b0" },
