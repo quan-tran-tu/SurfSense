@@ -936,9 +936,24 @@ class Config:
     if RERANKERS_ENABLED:
         RERANKERS_MODEL_NAME = os.getenv("RERANKERS_MODEL_NAME")
         RERANKERS_MODEL_TYPE = os.getenv("RERANKERS_MODEL_TYPE")
+        # Local cross-encoders default to fp32 and truncate at the model's own
+        # limit (8192 for bge-reranker-v2-m3), so one batch of 16 long documents
+        # needs several GB of activations and OOMs next to vLLM.
+        _reranker_kwargs = {}
+        if RERANKERS_MODEL_TYPE == "cross-encoder":
+            import torch
+
+            _reranker_kwargs = {
+                "dtype": os.getenv("RERANKERS_DTYPE")
+                or ("fp16" if torch.cuda.is_available() else None),
+                "tokenizer_kwargs": {
+                    "model_max_length": int(os.getenv("RERANKERS_MAX_LENGTH", "1024"))
+                },
+            }
         reranker_instance = Reranker(
             model_name=RERANKERS_MODEL_NAME,
             model_type=RERANKERS_MODEL_TYPE,
+            **_reranker_kwargs,
         )
     else:
         reranker_instance = None
