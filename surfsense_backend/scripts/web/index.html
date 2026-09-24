@@ -332,6 +332,13 @@
         <button id="addFolderBtn" class="sm">+ Add</button>
       </h2>
       <input id="folderPicker" type="file" webkitdirectory directory multiple class="hide">
+      <div class="opts" style="max-width:none;margin:6px 0 0">
+        <label>
+          <input type="checkbox" id="sessionScoped" checked>
+          This session only
+          <span title="On (the default): only the session open at upload time sees the folder; ⤴ makes it space-wide later. Off: every session retrieves it, and it can be shared or granted to a group.">ⓘ</span>
+        </label>
+      </div>
       <div id="folders"></div>
       <div id="ingest" class="hide">
         <div class="note" id="ingestMsg"></div>
@@ -1067,10 +1074,11 @@ async function ingest(fileList) {
   const { root, files, paths } = collectFiles(fileList);
   if (!files.length) { toast("No indexable files in that folder.", "warn"); return; }
 
-  // Uploads are always space-wide. The backend would scope a folder to any
-  // thread_id we sent (invisible to every other session until ⤴ promotes it);
-  // the opt-in for that was removed from the page as more confusing than useful.
-  const threadId = null;
+  // Uploads belong to the open session unless "this session only" is unticked:
+  // the backend scopes a folder to whichever thread_id we send, invisible to
+  // every other session until ⤴ promotes it. resumeSession() always has a
+  // session open, so state.threadId is set by the time anyone can upload.
+  const threadId = $("#sessionScoped").checked ? (state.threadId ?? null) : null;
 
   // The KB label is the basename, never a full disk path: it becomes Folder.name,
   // which the agent sees as /documents/<name>/… — a full path would leak the
@@ -1923,7 +1931,9 @@ function helpCommand() {
     "means nothing found there. The chip above the composer shows an active scope;",
     "✕ on it searches everything again.",
     "",
-    "Folders you upload are space-wide: every session can retrieve them.",
+    "Folders you upload belong to this session only: other sessions can't see,",
+    "search or cite them. ⤴ in the Folders panel makes one space-wide; untick",
+    "\"this session only\" before adding a folder to upload it space-wide.",
   ].join("\n"));
 }
 

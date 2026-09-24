@@ -18,7 +18,14 @@ from app.agents.chat.multi_agent_chat.shared.retrieval.hybrid_search import (
 )
 from app.agents.chat.multi_agent_chat.shared.retrieval.models import SearchScope
 from app.config import config
-from app.db import Chunk, Document, DocumentType, Folder, SearchSpace
+from app.db import (
+    Chunk,
+    Document,
+    DocumentType,
+    Folder,
+    NewChatThread,
+    SearchSpace,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -250,6 +257,49 @@ async def test_folder_ids_scope_excludes_unpicked_folders(db_session, db_search_
     found = {hit.document_id for hit in results}
     assert found == {document.id for document in wanted}
     assert excluded.id not in found
+
+
+async def test_thread_scope_hides_other_sessions_uploads(
+    db_session, db_user, db_search_space
+):
+    """Outside a LangGraph run (simple_rag, /reports) the session comes from the
+    scope: another session's upload must not answer, this session's and
+    space-wide folders must."""
+    threads = [
+        NewChatThread(
+            title=title, search_space_id=db_search_space.id, created_by_id=db_user.id
+        )
+        for title in ("mine", "theirs")
+    ]
+    db_session.add_all(threads)
+    await db_session.flush()
+    mine, theirs = threads
+
+    by_owner = {}
+    for index, owner in enumerate((mine.id, theirs.id, None)):
+        folder = await _add_folder(
+            db_session, search_space_id=db_search_space.id, name=f"Upload{index}"
+        )
+        folder.owner_thread_id = owner
+        by_owner[owner] = await _add_document(
+            db_session,
+            search_space_id=db_search_space.id,
+            folder_id=folder.id,
+            chunks=[(f"asyncio in upload {index}.", 0, _axis(index))],
+        )
+    await db_session.flush()
+
+    results = await search_chunks(
+        db_session,
+        search_space_id=db_search_space.id,
+        query="asyncio",
+        scope=SearchScope(thread_id=mine.id),
+        top_k=5,
+        query_embedding=_axis(0),
+    )
+
+    found = {hit.document_id for hit in results}
+    assert found == {by_owner[mine.id].id, by_owner[None].id}
 
 
 async def test_folder_scope_excludes_folderless_documents(db_session, db_search_space):

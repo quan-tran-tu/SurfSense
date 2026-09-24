@@ -52,7 +52,6 @@ from app.agents.chat.multi_agent_chat.shared.retrieval import (
     SearchScope,
     search_knowledge_base_context,
 )
-from app.agents.chat.runtime.path_resolver import current_thread_id
 from app.agents.chat.shared.search_query import build_search_terms
 from app.agents.chat.shared.session_context import render_session_context_block
 from app.agents.chat.shared.workspace_intent import mentions_workspace
@@ -76,6 +75,7 @@ async def _retrieve(
     mentioned_folder_ids: list[int] | None,
     top_k: int,
     keyword_terms: list[str],
+    thread_id: int | None,
 ) -> str | None:
     """Run the retrieval spine on its own short-lived session.
 
@@ -90,6 +90,7 @@ async def _retrieve(
     scope = SearchScope(
         document_ids=tuple(mentioned_document_ids) if mentioned_document_ids else None,
         folder_ids=tuple(mentioned_folder_ids) if mentioned_folder_ids else None,
+        thread_id=thread_id,
     )
 
     async with shielded_async_session() as session:
@@ -114,7 +115,9 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-async def _workspace_block(*, search_space_id: int, llm: Any) -> str | None:
+async def _workspace_block(
+    *, search_space_id: int, thread_id: int | None, llm: Any
+) -> str | None:
     """Render the user's folder/document listing, led by its exact totals.
 
     The totals are stated in words rather than left to be counted off the
@@ -132,16 +135,11 @@ async def _workspace_block(*, search_space_id: int, llm: Any) -> str | None:
             tree = await build_workspace_tree(
                 session,
                 search_space_id=search_space_id,
-                # The same call the search's own scoping uses
-                # (``hybrid_search._base_conditions``), so the listing can never
-                # name a folder the search would refuse to read.
-                #
-                # Both return ``None`` on this path: ``current_thread_id`` reads
-                # LangGraph's run config, and this flow runs no graph. So neither
-                # is session-scoped here — a pre-existing property of the lane,
-                # not something this listing introduces. They agree either way,
-                # which is the part that matters.
-                thread_id=current_thread_id(),
+                # The same thread the search is scoped to (``_retrieve``), so the
+                # listing can never name a folder the search would refuse to
+                # read. Passed in: this flow runs no graph, so
+                # ``current_thread_id`` would be ``None`` here.
+                thread_id=thread_id,
                 llm=llm,
             )
     except Exception as exc:  # pragma: no cover - defensive
@@ -176,12 +174,16 @@ async def stream_simple_rag(
     top_k: int = DEFAULT_TOP_K,
     no_results_message: str = NO_RESULTS_MESSAGE,
     session_context: str | None = None,
+    thread_id: int | None = None,
 ) -> AsyncGenerator[str, None]:
     """Retrieve, then stream one grounded answer. Yields SSE frames.
 
     ``session_context`` is the user's note for the session. It is not used to
     retrieve — the question is — but it is answered from, and ranks above the
     passages where the two disagree.
+
+    ``thread_id`` is the chat asking; folders another session uploaded are
+    invisible to both the search and the workspace listing.
 
     Emits the same text-start / text-delta / text-end triple the agent relay
     does, so no client change is needed to render it. Populates
@@ -201,6 +203,7 @@ async def stream_simple_rag(
         mentioned_folder_ids=mentioned_folder_ids,
         top_k=top_k,
         keyword_terms=keyword_terms,
+        thread_id=thread_id,
     )
     _perf_log.info(
         "[simple_rag] Retrieval in %.3fs (hits=%s, terms=%d)",
@@ -212,7 +215,9 @@ async def stream_simple_rag(
     # Gated: a question about the workspace itself gets the folder/document
     # listing, which no amount of passage retrieval can substitute for.
     workspace = (
-        await _workspace_block(search_space_id=search_space_id, llm=llm)
+        await _workspace_block(
+            search_space_id=search_space_id, thread_id=thread_id, llm=llm
+        )
         if mentions_workspace(question)
         else None
     )

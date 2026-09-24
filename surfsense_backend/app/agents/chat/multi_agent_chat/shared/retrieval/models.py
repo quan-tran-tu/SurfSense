@@ -22,6 +22,11 @@ class SearchScope:
 
     ``folder_ids`` names folder *roots* — matching is over each root's whole
     subtree, because an uploaded folder is a tree of ``Folder`` rows.
+
+    ``thread_id`` is the chat session asking: folders another session uploaded
+    are hidden. ``None`` falls back to the LangGraph run's thread, so callers
+    that run no graph (simple_rag, the /reports route) must pass it or they see
+    every session's uploads.
     """
 
     document_types: tuple[str, ...] | None = None
@@ -29,6 +34,7 @@ class SearchScope:
     folder_ids: tuple[int, ...] | None = None
     start_date: datetime | None = None
     end_date: datetime | None = None
+    thread_id: int | None = None
 
 
 @dataclass(frozen=True)

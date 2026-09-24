@@ -757,6 +757,10 @@ async def generate_report_document(
                     # subtrees), so a report can be written strictly from a subset
                     # of what is indexed. ``None`` = the whole knowledge base.
                     folder_ids=tuple(folder_ids) if folder_ids else None,
+                    # Explicit, not left to the LangGraph config: the /reports
+                    # route runs no graph, and without it a report would read
+                    # folders uploaded in other sessions.
+                    thread_id=thread_id,
                 )
                 reranker = RerankerService.get_reranker_instance()
 

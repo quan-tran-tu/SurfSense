@@ -120,7 +120,12 @@ async def _search(
         )
 
     conditions = _base_conditions(
-        search_space_id, scope, document_types, thread_id=current_thread_id()
+        search_space_id,
+        scope,
+        document_types,
+        thread_id=scope.thread_id
+        if scope.thread_id is not None
+        else current_thread_id(),
     )
     rows = await _fused_chunks(
         db_session,

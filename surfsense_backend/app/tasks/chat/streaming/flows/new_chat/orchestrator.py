@@ -730,6 +730,7 @@ async def stream_new_chat(
                 initial_step_id=initial_step_id,
                 initial_step_title=initial_step_title,
                 session_context=session_context,
+                thread_id=chat_id,
             )
         else:
             turn_stream = run_stream_loop(

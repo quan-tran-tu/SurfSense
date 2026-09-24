@@ -157,14 +157,14 @@ boundary, so user A can never see or delete user B's documents. This client
 never lets you name a space by id. Because the space name matches, `ask.sh` and
 this page share one knowledge base — ingest from the CLI, ask from the browser.
 
-**Uploads are space-wide unless you ask for otherwise.** **+ Add** indexes the
-folder into the search space, where every session can retrieve and cite it —
-the same as `ask.sh`. Tick **this session only** first and the upload is instead
-stamped with the open session's thread id (`folders.owner_thread_id`): only that
-session's agent can see, search, or cite it, and other sessions — yours included
-— don't even see it in their workspace tree. Leave it off unless you mean it; a
-folder stamped for a session you later abandon is invisible everywhere until you
-promote it.
+**Uploads belong to the session that made them.** With **this session only**
+ticked (the default), **+ Add** stamps the folder with the open session's thread
+id (`folders.owner_thread_id`): only that session can see, search, or cite it —
+questions, reports and the workspace tree alike — and other sessions, yours
+included, don't see it at all. Documents the admin grants to your group, and
+anything you promoted, stay in the sidebar for every session. Untick the box
+before **+ Add** to upload space-wide instead, the same as `ask.sh`; do that (or
+promote afterwards) for a folder you mean to share or grant to a group.
 
 The **Folders** list badges every scoped folder (`this session` / `session #n`),
 and the **⤴** button promotes one to space-wide: the stamp is cleared on the
