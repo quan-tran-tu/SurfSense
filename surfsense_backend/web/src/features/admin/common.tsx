@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { adminApi } from "../../api/client";
-import type { AdminUser } from "../../api/types";
+import type { AdminGroup, AdminUser } from "../../api/types";
 import { queryClient } from "../../queryClient";
 
 export const adminKeys = {
@@ -18,6 +18,9 @@ export const refreshAdmin = () => queryClient.invalidateQueries({ queryKey: ["ad
 
 export const useAdminUsers = () =>
   useQuery({ queryKey: adminKeys.users, queryFn: () => adminApi<AdminUser[]>("GET", "/users") });
+
+export const useAdminGroups = () =>
+  useQuery({ queryKey: adminKeys.groups, queryFn: () => adminApi<AdminGroup[]>("GET", "/groups") });
 
 export const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
 

@@ -1,11 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { adminApi } from "../../api/client";
-import type { AdminFolder, AdminUser } from "../../api/types";
+import type { AdminFolder, AdminGroupMember, AdminUser } from "../../api/types";
 import { useStore } from "../../store";
 import { guard, toast } from "../../ui/toast";
 import { byName } from "../sidebar/FolderTree";
-import { adminKeys, Badge, refreshAdmin, useAdminUsers, when } from "./common";
+import { adminKeys, Badge, refreshAdmin, useAdminGroups, useAdminUsers, when } from "./common";
 
 type SortKey = "email" | "is_superuser" | "is_active" | "last_login" | "folder_count" | "document_count";
 
@@ -118,6 +118,57 @@ function UserFolders({ user }: { user: AdminUser }) {
   return <div className="afolders">{rows}</div>;
 }
 
+/**
+ * The groups this user is in, with add/remove. There is no per-user endpoint,
+ * so it reads every group's member list — the same queries the Groups tab
+ * caches, and an install has a handful of groups.
+ */
+function UserGroups({ user }: { user: AdminUser }) {
+  const groups = useAdminGroups();
+  const list = groups.data ?? [];
+  const members = useQueries({
+    queries: list.map((g) => ({
+      queryKey: adminKeys.groupMembers(g.id),
+      queryFn: () => adminApi<AdminGroupMember[]>("GET", `/groups/${g.id}/members`),
+    })),
+  });
+  if (groups.isPending || members.some((m) => m.isPending)) return <div className="empty">loading…</div>;
+  if (!list.length) return <div className="empty">no groups yet — create one on the Groups tab</div>;
+  const inGroup = list.filter((_, i) => members[i].data?.some((m) => m.user_id === user.id));
+  const others = list.filter((g) => !inGroup.includes(g));
+
+  return (
+    <>
+      {!inGroup.length && <div className="empty">not in any group</div>}
+      {inGroup.map((g) => (
+        <div key={g.id} className="arow">
+          <div className="grow">{g.name}</div>
+          <span className="sub">{g.folder_count} folder(s)</span>
+          <button className="sm danger" onClick={() => guard(async () => {
+            await adminApi("DELETE", `/groups/${g.id}/members/${user.id}`);
+            toast(`Removed ${user.email} from ${g.name}.`);
+            await refreshAdmin();
+          })}>Remove</button>
+        </div>
+      ))}
+      <div className="arow">
+        <select value="" disabled={!others.length} onChange={(e) => {
+          const g = others.find((x) => x.id === Number(e.target.value));
+          if (!g) return;
+          guard(async () => {
+            const r = await adminApi<{ message?: string }>("POST", `/groups/${g.id}/members`, { json: { user_id: user.id } });
+            toast(r?.message ?? `Added ${user.email} to ${g.name}.`);
+            await refreshAdmin();
+          });
+        }}>
+          <option value="">{others.length ? "Add to group…" : "already in every group"}</option>
+          {others.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+        </select>
+      </div>
+    </>
+  );
+}
+
 function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
   const me = useStore((s) => s.email);
   // The server refuses self-demotion, self-deactivation and self-deletion; the
@@ -186,6 +237,9 @@ function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
           });
         }}>Set</button>
       </div>
+
+      <h3>Groups</h3>
+      <UserGroups user={u} />
 
       <h3>Folders</h3>
       <UserFolders user={u} />

@@ -71,16 +71,22 @@ function useSessionNote() {
   return useStore((s) => (s.threadId != null ? s.sessionNotes[s.threadId] ?? "" : "").trim());
 }
 
-/** Like the scope, a session note silently changes every answer, so it is announced. */
-function ContextBar({ onEdit }: { onEdit: () => void }) {
+/**
+ * The session-context toggle. Like the scope, a note silently changes every
+ * answer, so once one is set the chip lights up and shows its first line.
+ */
+function ContextChip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const note = useSessionNote();
-  if (!note) return null;
   const first = note.split("\n")[0];
   return (
-    <div className="scopebar ctx" title={note}>
-      <span className="txt">session context: {first}{note.includes("\n") ? " …" : ""} ({note.length} chars)</span>
-      <button className="sm" onClick={onEdit}>Edit</button>
-    </div>
+    <button className={`chip${note ? " on" : ""}${open ? " open" : ""}`} onClick={onToggle}
+      title={note
+        ? `Session context (${note.length} chars) — click to edit:\n\n${note}`
+        : "Give the model facts your documents don't have yet — a changed role, a recent event. " +
+          "Kept for this session only, sent with every question and report, never added to the knowledge base."}>
+      <span className="ico">✎</span>
+      <span className="txt">{note ? `Context: ${first}${note.includes("\n") ? " …" : ""}` : "Session context"}</span>
+    </button>
   );
 }
 
@@ -116,9 +122,7 @@ function ContextPanel({ onClose }: { onClose: () => void }) {
 
 function Composer() {
   const busy = useStore((s) => s.busy);
-  const spaceId = useStore((s) => s.spaceId);
   const threadId = useStore((s) => s.threadId);
-  const note = useSessionNote();
   const [text, setText] = useState("");
   const [ctxOpen, setCtxOpen] = useState(false);
   const templates = useStore((s) => s.templates);
@@ -130,7 +134,7 @@ function Composer() {
     const q = input.current;
     if (!q) return;
     q.style.height = "auto";
-    q.style.height = `${Math.min(q.scrollHeight, 180)}px`;
+    q.style.height = `${Math.min(q.scrollHeight, 200)}px`;
   }, [text]);
   useEffect(() => { if (!busy) input.current?.focus(); }, [busy]);
   // The note is per session: switching sessions closes the editor on the old one.
@@ -169,36 +173,32 @@ function Composer() {
     <footer>
       <div className="composer">
         <ScopeBar />
-        <ContextBar onEdit={() => setCtxOpen(true)} />
         {ctxOpen && <ContextPanel key={threadId} onClose={() => setCtxOpen(false)} />}
-        <div className="box">
+        <div className="inbox" onClick={(e) => { if (e.target === e.currentTarget) input.current?.focus(); }}>
           <textarea id="q" ref={input} rows={1} value={text}
-            placeholder="Ask your knowledge base…  (Enter to send · Shift+Enter for a newline · 📄 Report writes a report on it)"
+            placeholder="Ask your knowledge base…"
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} />
-          <button className="primary" disabled={busy} onClick={submit}>Send</button>
-          <div className="menu">
-            <button disabled={busy} onClick={() => report()}
-              title="Viết báo cáo Markdown từ kho tài liệu, theo nội dung trong ô chat (trong phạm vi folder đang chọn)">
-              📄 Report
-            </button>
-            {tplMenu && (
-              <div className="menu-list up" onMouseLeave={() => setTplMenu(false)}>
-                <div className="menu-head">Định dạng theo mẫu</div>
-                <button onClick={() => report(null)}>Không dùng mẫu</button>
-                {templates.map((t) => (
-                  <button key={t.id} onClick={() => report(t)}>t{t.id} · {t.name}</button>
-                ))}
-              </div>
-            )}
+          <div className="toolrow">
+            <ContextChip open={ctxOpen} onToggle={() => setCtxOpen(!ctxOpen)} />
+            <span className="hint">Enter to send · Shift+Enter for a newline</span>
+            <div className="menu">
+              <button className="ghost" disabled={busy} onClick={() => report()}
+                title="Viết báo cáo Markdown từ kho tài liệu, theo nội dung trong ô chat (trong phạm vi folder đang chọn)">
+                📄 Report
+              </button>
+              {tplMenu && (
+                <div className="menu-list up" onMouseLeave={() => setTplMenu(false)}>
+                  <div className="menu-head">Định dạng theo mẫu</div>
+                  <button onClick={() => report(null)}>Không dùng mẫu</button>
+                  {templates.map((t) => (
+                    <button key={t.id} onClick={() => report(t)}>t{t.id} · {t.name}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button className="primary" disabled={busy || !text.trim()} onClick={submit}>Send</button>
           </div>
-        </div>
-        <div className="opts">
-          <button className={`link${note ? " on" : ""}`} onClick={() => setCtxOpen(!ctxOpen)}
-            title="Give the model facts your documents don't have yet — a changed role, a recent event. Kept for this session only, sent with every question and report, never added to the knowledge base.">
-            Session context
-          </button>
-          <span className="mono">space #{spaceId} · thread #{threadId}</span>
         </div>
       </div>
     </footer>

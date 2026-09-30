@@ -10,7 +10,7 @@ import { adminApi } from "../../api/client";
 import type { AdminFolder, AdminGroup, AdminGroupFolder, AdminGroupMember } from "../../api/types";
 import { useStore } from "../../store";
 import { guard, toast } from "../../ui/toast";
-import { adminKeys, Badge, refreshAdmin, useAdminUsers } from "./common";
+import { adminKeys, Badge, refreshAdmin, useAdminGroups, useAdminUsers } from "./common";
 
 /** A one-shot <select> that fires `onPick` and resets itself. */
 function PickerRow({ placeholder, empty, options, onPick }:
@@ -81,7 +81,7 @@ function GroupDetail({ groupId, name }: { groupId: number; name: string }) {
   return (
     <aside className="udetail" id="groupDetail">
       <header><div className="grow"><strong>{name}</strong></div></header>
-      <h4>Members</h4>
+      <h4>Members ({(members.data ?? []).length})</h4>
       {(members.data ?? []).map((m) => (
         <div key={m.user_id} className="arow">
           <div className="grow">{m.display_name ? `${m.display_name} <${m.email}>` : m.email}</div>
@@ -179,7 +179,7 @@ Its ${g.member_count} member(s) lose access to its ${g.folder_count} granted fol
 }
 
 export function GroupsTab() {
-  const groups = useQuery({ queryKey: adminKeys.groups, queryFn: () => adminApi<AdminGroup[]>("GET", "/groups") });
+  const groups = useAdminGroups();
   const [selected, setSelected] = useState<number | null>(null);
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
@@ -189,6 +189,10 @@ export function GroupsTab() {
   return (
     <section className="apane">
       <h3 style={{ marginTop: 0 }}>User groups — everyone in a group reads the folders granted to it</h3>
+      <div className="sub" style={{ marginBottom: 10 }}>
+        Click a group to add or remove its members and grant it folders. A user's
+        groups can also be changed from their panel on the Users tab.
+      </div>
       <form className="toolbar" autoComplete="off" onSubmit={(e) => {
         e.preventDefault();
         guard(async () => {

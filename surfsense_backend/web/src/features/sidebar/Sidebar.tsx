@@ -313,14 +313,14 @@ export function Sidebar() {
         <Templates />
       </div>
       <div className="side-foot">
-        <div className="note mono" style={{ whiteSpace: "pre-line", marginTop: 0 }}>{email}</div>
+        <span className="who-am-i" title={email}>{email}</span>
         {isAdmin && (
-          <button id="adminBtn" className="sm" onClick={() => {
+          <button className="sm" onClick={() => {
             history.replaceState(null, "", "#admin");
             setState({ adminOpen: true });
           }}>Admin</button>
         )}
-        <button className="sm" style={{ marginTop: 8, width: "100%" }} onClick={() => guard(signOut)}>Sign out</button>
+        <button className="sm" onClick={() => guard(signOut)}>Sign out</button>
       </div>
       <Resizer />
     </aside>
