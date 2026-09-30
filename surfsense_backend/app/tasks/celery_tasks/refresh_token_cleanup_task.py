@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, or_
@@ -10,11 +9,12 @@ from sqlalchemy import delete, or_
 from app.celery_app import celery_app
 from app.config import config
 from app.db import RefreshToken, async_session_maker
+from app.tasks.celery_tasks import run_async_celery_task
 
 
 @celery_app.task(name="purge_refresh_tokens")
 def purge_refresh_tokens() -> int:
-    return asyncio.run(_purge_refresh_tokens())
+    return run_async_celery_task(_purge_refresh_tokens)
 
 
 async def _purge_refresh_tokens() -> int:

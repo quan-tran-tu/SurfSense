@@ -16,7 +16,6 @@ shares, links and group grants that point at the folder.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -27,6 +26,7 @@ from app.celery_app import celery_app
 from app.config import config
 from app.db import Folder, User, async_session_maker
 from app.services.folder_service import dispatch_folder_deletion
+from app.tasks.celery_tasks import run_async_celery_task
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def retention_days() -> dict[str, int | None]:
 
 @celery_app.task(name="expire_old_folders")
 def expire_old_folders() -> int:
-    return asyncio.run(_run())
+    return run_async_celery_task(_run)
 
 
 async def _run() -> int:
