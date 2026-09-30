@@ -4,6 +4,7 @@ import { keys, queryClient, refreshFolders } from "../queryClient";
 import { getState, savePrefs, setState } from "../store";
 import { toast } from "../ui/toast";
 import { addMessage, clearMessages } from "./chat/messages";
+import { reportIdFromHash } from "./report/route";
 
 /* ------------------------------------------------------------------ space */
 
@@ -277,6 +278,12 @@ export async function resume() {
 }
 
 export async function start() {
+  // A report canvas tab needs only the session cookie: no space or model setup,
+  // no thread to resume. The report routes check access server-side.
+  if (reportIdFromHash() != null) {
+    setState({ signedIn: true });
+    return;
+  }
   await ensureSpace();
   await ensureModel();
   await resumeSession();

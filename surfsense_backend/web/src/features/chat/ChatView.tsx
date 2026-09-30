@@ -10,7 +10,16 @@ import { runCommand } from "./commands";
 function Message({ m }: { m: ChatMessage }) {
   const model = useStore((s) => s.model);
   if (m.role === "system") {
-    return <div className="msg system"><div className="bubble sys">{m.text}</div></div>;
+    return (
+      <div className="msg system">
+        <div className="bubble sys">{m.text}</div>
+        {m.links && (
+          <div className="msglinks">
+            {m.links.map((l) => <a key={l.href} href={l.href} target="_blank" rel="noopener">{l.label}</a>)}
+          </div>
+        )}
+      </div>
+    );
   }
   return (
     <div className={`msg ${m.role}`}>

@@ -21,6 +21,10 @@ export const setStatus = (id: number, status: string | null, kind: StatusKind = 
  * /help. Not sent to the model and not persisted; /reports re-derives report state
  * from the server, so a reload dropping these notes loses nothing.
  */
-export const addSystemNote = (text: string) => addMessage("system", text);
+export function addSystemNote(text: string, links?: ChatMessage["links"]) {
+  const id = addMessage("system", text);
+  if (links?.length) updateMessage(id, { links });
+  return id;
+}
 
 export const clearMessages = () => setState({ messages: [] });

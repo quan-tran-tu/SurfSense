@@ -213,6 +213,16 @@ Reports live in your search space, so `/reports` re-derives them from the server
 on demand — the in-chat "report ready" notes are just convenience and aren't
 persisted.
 
+**Report canvas.** The "report ready" note and `/reports` carry an **Open** link
+that opens the report in a new browser tab (`#/report/<id>`), so the chat keeps
+running beside it. **Edit** shows the Markdown source (CodeMirror) next to a live
+preview; **View** shows the preview alone. **Save** (or Ctrl+S) overwrites the
+version on screen through `PUT /reports/{id}/content`. The picker lists every
+version in the report's group — the original and each `/revise` — and refreshes
+when you come back to the tab. **Export** downloads the saved copy (PDF, DOCX,
+ODT, HTML, MD, TXT); with unsaved edits it asks to save first. Closing the tab,
+reloading or switching versions with unsaved edits asks before discarding them.
+
 ## Admin
 
 A user whose `is_superuser` flag is set sees an **Admin** button in the sidebar.

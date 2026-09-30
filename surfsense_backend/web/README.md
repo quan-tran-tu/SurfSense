@@ -41,4 +41,5 @@ dials the model, not the browser.
 | `src/features/chat/` | Streaming questions, slash commands, reports |
 | `src/features/sidebar/` | Sessions, folder tree, templates, imports, shares |
 | `src/features/admin/` | The system-admin page |
+| `src/features/report/` | The report canvas, a tab of its own at `#/report/<id>`; CodeMirror is code-split into it |
 | `src/lib/Markdown.tsx` | Answer rendering (GFM, citations as chips; raw HTML is never rendered) |

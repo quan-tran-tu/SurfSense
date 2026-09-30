@@ -11,6 +11,7 @@ import { toast } from "../../ui/toast";
 import { sessionContext } from "../sessionContext";
 import { TPL_PROMPT_CHARS } from "../templates";
 import { whileBusy } from "./ask";
+import { reportHref } from "../report/route";
 import { addMessage, addSystemNote, setStatus, updateMessage } from "./messages";
 
 export const EXPORT_FORMATS = ["pdf", "docx", "html", "latex", "epub", "odt", "plain", "md"];
@@ -115,7 +116,8 @@ export async function reportCommand(request: string, parentId: number | null = n
       addSystemNote(
         `📄 Report #${res.report_id} — “${res.title}” is ready.\n` +
         `Download it:  /export ${res.report_id} pdf   (also: docx, html, latex, epub, odt, plain, md)\n` +
-        `Revise it:    /revise ${res.report_id} <what to change>`);
+        `Revise it:    /revise ${res.report_id} <what to change>`,
+        [{ label: `Mở báo cáo #${res.report_id} để xem / sửa ↗`, href: reportHref(res.report_id) }]);
     } catch (e) {
       setStatus(msgId, `Report failed: ${e instanceof Error ? e.message : e}`, "warn");
     } finally {
@@ -198,5 +200,6 @@ export async function listReportsCommand() {
   if (!rs.length) { addSystemNote("No reports in this session yet. Create one with /report <query>."); return; }
   const lines = rs.map((r) => `#${r.id} — ${r.title}${r.report_metadata?.status === "failed" ? "  (failed)" : ""}`);
   addSystemNote("Reports in this session:\n" + lines.join("\n") +
-    "\n\nDownload: /export <id> <pdf|docx|html|latex|epub|odt|plain|md>");
+    "\n\nDownload: /export <id> <pdf|docx|html|latex|epub|odt|plain|md>",
+    rs.map((r) => ({ label: `Mở #${r.id} ↗`, href: reportHref(r.id) })));
 }

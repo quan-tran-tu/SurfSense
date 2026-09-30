@@ -17,6 +17,7 @@ export interface ChatMessage {
   streaming?: boolean;
   status?: string;
   statusKind?: StatusKind;
+  links?: { label: string; href: string }[];   // shown under the bubble, open in a new tab
 }
 
 /** What the right-hand panel shows: a cited chunk in context, or a whole document. */
