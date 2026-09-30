@@ -70,14 +70,21 @@ export async function threadReports() {
 }
 
 /** Write (or, with parentId, revise) a report. One blocking call; the bubble carries a status. */
-export async function reportCommand(request: string, parentId: number | null = null) {
+/**
+ * `template` is the Report button's pick: given (even as null), the request is
+ * taken literally. Left undefined, a leading "t<id>" — the /report form — names
+ * the template.
+ */
+export async function reportCommand(
+  request: string, parentId: number | null = null, template?: Template | null,
+) {
   if (!request) { toast("Usage: /report [t<id>] <what the report should cover>", "warn"); return; }
   if (getState().busy) return;
 
   // "/report t2 <query>" formats the report after template t2. A revision keeps
   // its parent's structure, so only /report takes one.
-  let tpl: Template | null = null;
-  const m = parentId ? null : request.match(/^t(\d+)(?:\s+([\s\S]*))?$/i);
+  let tpl: Template | null = template ?? null;
+  const m = parentId || template !== undefined ? null : request.match(/^t(\d+)(?:\s+([\s\S]*))?$/i);
   if (m) {
     tpl = getState().templates.find((t) => t.id === Number(m[1])) ?? null;
     if (!tpl) { toast(`No template t${m[1]}. /templates lists what you have.`, "warn"); return; }
@@ -86,7 +93,9 @@ export async function reportCommand(request: string, parentId: number | null = n
   }
 
   await whileBusy(async () => {
-    addMessage("user", (parentId ? `/revise ${parentId} ` : `/report ${tpl ? `t${tpl.id} ` : ""}`) + request);
+    addMessage("user", template !== undefined
+      ? `📄 Báo cáo${tpl ? ` (mẫu ${tpl.name})` : ""}: ${request}`
+      : (parentId ? `/revise ${parentId} ` : `/report ${tpl ? `t${tpl.id} ` : ""}`) + request);
     const msgId = addMessage("assistant", "", true);
     setStatus(msgId, parentId ? "Đang sửa lại báo cáo…" : "Đang tìm tư liệu và viết báo cáo…");
 

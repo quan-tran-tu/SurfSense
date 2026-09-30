@@ -203,6 +203,7 @@ question). `/help` lists them in-app.
 
 | command | what it does |
 |---|---|
+| **📄 Report** button | Next to **Send**: writes a report on whatever is typed in the input, within the current folder scope. With templates uploaded it first asks which to follow (or none). The command-free way to `/report`. |
 | `/report <query>` | Writes a Markdown report from your knowledge base and prints its id. Drives the backend's existing `generate_report` tool — same directive trick as **Force retrieval** — so no report-specific endpoint exists to bypass isolation. |
 | `/revise [id] <changes>` | Revises a report (defaults to the last one made in this session) — a new version in the same group. |
 | `/export [id] <format>` | Downloads a report. Formats: `pdf`, `docx`, `html`, `latex`, `epub`, `odt`, `plain`, and `md` (the raw Markdown source). Defaults to the last report, `pdf`. |

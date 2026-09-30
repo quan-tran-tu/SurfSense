@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Markdown } from "../../lib/Markdown";
+import type { Template } from "../../api/types";
 import { useStore, type ChatMessage } from "../../store";
 import { guard, toast } from "../../ui/toast";
 import { clearScope } from "../scope";
 import { SESSION_CONTEXT_MAX, setSessionContext } from "../sessionContext";
 import { ask } from "./ask";
 import { runCommand } from "./commands";
+import { reportCommand } from "./reports";
 
 function Message({ m }: { m: ChatMessage }) {
   const model = useStore((s) => s.model);
@@ -119,6 +121,8 @@ function Composer() {
   const note = useSessionNote();
   const [text, setText] = useState("");
   const [ctxOpen, setCtxOpen] = useState(false);
+  const templates = useStore((s) => s.templates);
+  const [tplMenu, setTplMenu] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
 
   // Grow with the text, up to a cap.
@@ -132,10 +136,26 @@ function Composer() {
   // The note is per session: switching sessions closes the editor on the old one.
   useEffect(() => setCtxOpen(false), [threadId]);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCtxOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { setCtxOpen(false); setTplMenu(false); } };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
+
+  // The Report button: what is in the input becomes the report request. With
+  // templates to choose from, a menu asks which (or none) first.
+  const report = (tpl?: Template | null) => {
+    const q = text.trim();
+    if (busy) return;
+    if (!q) {
+      toast("Gõ vào ô chat nội dung báo cáo cần viết, rồi bấm Report.", "warn");
+      input.current?.focus();
+      return;
+    }
+    if (tpl === undefined && templates.length) { setTplMenu(true); return; }
+    setTplMenu(false);
+    setText("");
+    guard(() => reportCommand(q, null, tpl ?? null));
+  };
 
   const submit = () => {
     const q = text.trim();
@@ -153,10 +173,25 @@ function Composer() {
         {ctxOpen && <ContextPanel key={threadId} onClose={() => setCtxOpen(false)} />}
         <div className="box">
           <textarea id="q" ref={input} rows={1} value={text}
-            placeholder="Ask your knowledge base…  (/help for commands · Enter to send, Shift+Enter for a newline)"
+            placeholder="Ask your knowledge base…  (Enter to send · Shift+Enter for a newline · 📄 Report writes a report on it)"
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} />
           <button className="primary" disabled={busy} onClick={submit}>Send</button>
+          <div className="menu">
+            <button disabled={busy} onClick={() => report()}
+              title="Viết báo cáo Markdown từ kho tài liệu, theo nội dung trong ô chat (trong phạm vi folder đang chọn)">
+              📄 Report
+            </button>
+            {tplMenu && (
+              <div className="menu-list up" onMouseLeave={() => setTplMenu(false)}>
+                <div className="menu-head">Định dạng theo mẫu</div>
+                <button onClick={() => report(null)}>Không dùng mẫu</button>
+                {templates.map((t) => (
+                  <button key={t.id} onClick={() => report(t)}>t{t.id} · {t.name}</button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div className="opts">
           <button className={`link${note ? " on" : ""}`} onClick={() => setCtxOpen(!ctxOpen)}

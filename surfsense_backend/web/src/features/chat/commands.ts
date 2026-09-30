@@ -148,6 +148,8 @@ function helpCommand() {
     "  /help                    show this",
     "",
     "Anything without a leading / is asked against your knowledge base.",
+    "To write a report, type what it should cover and press 📄 Report — no command",
+    "needed; with templates uploaded it asks which one to follow.",
     "",
     "To check whether something appears in only some of your folders, tick those",
     "folders in the Folders panel (or use /scope). Questions and reports are then",
