@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Markdown } from "../../lib/Markdown";
 import type { Template } from "../../api/types";
 import { useStore, type ChatMessage } from "../../store";
+import { toggleSidebar, useLayout } from "../../ui/layout";
 import { guard, toast } from "../../ui/toast";
 import { clearScope } from "../scope";
 import { SESSION_CONTEXT_MAX, setSessionContext } from "../sessionContext";
@@ -205,9 +206,36 @@ function Composer() {
   );
 }
 
+/** Hides or shows the sidebar; Ctrl+B does the same. */
+function SidebarToggle() {
+  const hidden = useLayout((s) => s.sidebarHidden);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+  return (
+    <button className="side-toggle" onClick={toggleSidebar}
+      title={`${hidden ? "Show" : "Hide"} the sidebar (Ctrl+B)`} aria-label={hidden ? "Show sidebar" : "Hide sidebar"}>
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <rect x="2.5" y="3.5" width="15" height="13" rx="2.5" />
+        <path d="M7.5 3.5v13" />
+        {hidden ? <path d="m11 8.5 2 1.5-2 1.5" strokeLinecap="round" strokeLinejoin="round" />
+          : <path d="m13 8.5-2 1.5 2 1.5" strokeLinecap="round" strokeLinejoin="round" />}
+      </svg>
+    </button>
+  );
+}
+
 export function ChatView() {
   return (
     <main>
+      <SidebarToggle />
       <Messages />
       <Composer />
     </main>

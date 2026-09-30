@@ -321,6 +321,8 @@ export function Sidebar() {
   const email = useStore((s) => s.email);
   const isAdmin = useStore((s) => s.isAdmin);
   const width = useLayout((s) => s.sidebarWidth);
+  // Hidden rather than unmounted: the scope effects below keep running.
+  const hidden = useLayout((s) => s.sidebarHidden);
   const tree = useQuery({ queryKey: keys.tree(spaceId), queryFn: loadTree });
   const links = useQuery({ queryKey: keys.imports(spaceId), queryFn: listImports });
 
@@ -338,7 +340,7 @@ export function Sidebar() {
   }, [tree.data, threadId]);
 
   return (
-    <aside id="sidebar" style={{ width }}>
+    <aside id="sidebar" style={{ width }} className={hidden ? "hide" : undefined}>
       <div className="side-scroll">
         <Sessions />
         <Folders nodes={tree.data} links={links.data} />

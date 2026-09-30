@@ -13,6 +13,7 @@ const SIDEBAR_DEFAULT = 300;
 
 interface Layout {
   sidebarWidth: number;
+  sidebarHidden: boolean;
   collapsed: Record<string, boolean>;
 }
 
@@ -21,10 +22,11 @@ function read(): Layout {
     const v = JSON.parse(localStorage.getItem(LS) || "{}");
     return {
       sidebarWidth: clampWidth(Number(v.sidebarWidth) || SIDEBAR_DEFAULT),
+      sidebarHidden: v.sidebarHidden === true,
       collapsed: v.collapsed && typeof v.collapsed === "object" ? v.collapsed : {},
     };
   } catch {
-    return { sidebarWidth: SIDEBAR_DEFAULT, collapsed: {} };
+    return { sidebarWidth: SIDEBAR_DEFAULT, sidebarHidden: false, collapsed: {} };
   }
 }
 
@@ -35,6 +37,8 @@ export const useLayout = create<Layout>(read);
 useLayout.subscribe((s) => {
   try { localStorage.setItem(LS, JSON.stringify(s)); } catch { /* defaults next time */ }
 });
+
+export const toggleSidebar = () => useLayout.setState((s) => ({ sidebarHidden: !s.sidebarHidden }));
 
 export const setSidebarWidth = (w: number) => useLayout.setState({ sidebarWidth: clampWidth(w) });
 
