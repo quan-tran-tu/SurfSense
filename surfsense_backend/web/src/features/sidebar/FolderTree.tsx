@@ -9,7 +9,7 @@
  * opened — a large upload is thousands of rows nobody asked to see.
  */
 import { useQuery } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { FolderDocument, FolderNode } from "../../api/types";
 import { keys } from "../../queryClient";
 import { setState, useStore } from "../../store";
@@ -39,9 +39,13 @@ export function ActBtn({ label, cls = "", title, onClick }:
  */
 export function ScopePick({ ids, names, title, disabled }:
   { ids: number[]; names: Record<number, string>; title: string; disabled?: boolean }) {
-  const checked = useStore((s) => ids.length > 0 && ids.every((id) => s.scopeFolderIds.includes(id)));
+  const ticked = useStore((s) => ids.filter((id) => s.scopeFolderIds.includes(id)).length);
+  const checked = ids.length > 0 && ticked === ids.length;
+  // Some but not all of a group's or user's folders in scope: show it half-ticked.
+  const box = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (box.current) box.current.indeterminate = ticked > 0 && !checked; }, [ticked, checked]);
   return (
-    <input type="checkbox" className="pick" title={title} disabled={disabled} checked={checked}
+    <input ref={box} type="checkbox" className="pick" title={title} disabled={disabled} checked={checked}
       onClick={(e) => e.stopPropagation()}
       onChange={(e) => toggleScope(ids, e.target.checked, names)} />
   );

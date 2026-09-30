@@ -65,7 +65,31 @@ aside h2 {
 .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 2px 8px; }
 .ro { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .7; }
 .item .dead { color: var(--warn); font-size: 11px; flex: none; }
-.item input[type=checkbox] { width: auto; flex: none; margin: 0; }
+.item input[type=checkbox] { flex: none; margin: 0; }
+/* Checkboxes in the theme: a rounded box, filled with the accent when ticked,
+   a bar when only some of a group's or user's folders are. */
+input[type=checkbox] {
+  appearance: none; -webkit-appearance: none; flex: none; width: 15px; height: 15px; padding: 0;
+  margin: 0; border: 1.5px solid #4a5268; border-radius: 4px; background: transparent center / 11px no-repeat;
+  cursor: pointer; vertical-align: middle; transition: background-color .12s, border-color .12s;
+}
+input[type=checkbox]:hover:not(:disabled) { border-color: var(--accent); }
+input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[type=checkbox]:checked, input[type=checkbox]:indeterminate { background-color: var(--accent); border-color: var(--accent); }
+input[type=checkbox]:checked { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2 5 8.6l4.5-5' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+input[type=checkbox]:indeterminate { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 6h6' stroke='white' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E"); }
+input[type=checkbox]:disabled { opacity: .35; cursor: not-allowed; }
+
+/* Folders section sub-folds: My folders / Groups / Users. */
+.subhead {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px 4px; margin-top: 2px; cursor: pointer;
+  user-select: none; font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--muted);
+}
+.subhead:hover { color: var(--fg); }
+.subhead .caret { width: 12px; font-size: 9px; text-align: center; }
+.subhead .name { flex: 1; }
+.subhead .count { font-weight: 400; }
+.subfold + .subfold { border-top: 1px dashed var(--line); margin-top: 4px; }
 .stack { display: flex; gap: 6px; }
 .stack input { min-width: 0; padding: 4px 9px; font-size: 13px; }
 .stack button { flex: none; }
@@ -228,7 +252,7 @@ a.cite:hover, a.cite.on { background: var(--accent); border-color: var(--accent)
 .card h4 { margin: 0; font-size: 13px; }
 .fgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 12px; align-items: end; }
 .check { display: flex; gap: 6px; align-items: center; margin: 10px 0 8px; font-size: 13px; color: var(--fg); cursor: pointer; }
-.check input { width: auto; }
+.check input { flex: none; }
 .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .asplit { flex: 1; min-height: 0; display: flex; gap: 16px; }
 .tablewrap {

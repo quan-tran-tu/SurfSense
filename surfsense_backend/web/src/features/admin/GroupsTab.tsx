@@ -92,8 +92,10 @@ function GroupDetail({ groupId, name }: { groupId: number; name: string }) {
           })}>Remove</button>
         </div>
       ))}
+      {/* Admins are never members: they already read every user's folders. */}
       <PickerRow placeholder="Add member…" empty="no one left to add"
-        options={(users.data ?? []).filter((u) => !memberIds.has(u.id)).map((u) => ({ value: u.id, label: u.email }))}
+        options={(users.data ?? []).filter((u) => !u.is_superuser && !memberIds.has(u.id))
+          .map((u) => ({ value: u.id, label: u.email }))}
         onPick={(userId) => guard(async () => {
           await adminApi("POST", `/groups/${groupId}/members`, { json: { user_id: userId } });
           await refreshAdmin();

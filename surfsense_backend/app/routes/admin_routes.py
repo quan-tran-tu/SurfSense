@@ -18,6 +18,10 @@ read-only access with no token and no acceptance step — the way an admin
 publishes "general" documents to a team. Membership itself grants nothing:
 two members of a group still cannot see each other's personal folders unless a
 share token or a grant says so. See ``app.services.folder_sharing_service``.
+
+Admins are never group members: they already read every non-admin user's
+folders, and they are the ones who hand out grants. Adding one is refused, and
+promoting a member to admin drops their memberships.
 """
 
 import logging
@@ -347,6 +351,13 @@ async def update_user(
     if body.is_active is not None:
         user.is_active = body.is_active
     if body.is_superuser is not None:
+        if body.is_superuser and not user.is_superuser:
+            # Admins are never group members (see the module docstring).
+            await session.execute(
+                delete(UserGroupMembership).where(
+                    UserGroupMembership.user_id == user.id
+                )
+            )
         user.is_superuser = body.is_superuser
     if body.display_name is not None:
         user.display_name = body.display_name.strip() or None
@@ -671,6 +682,11 @@ async def add_group_member(
     user = await session.get(User, body.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.is_superuser:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{user.email} is an admin — admins are not added to groups",
+        )
 
     session.add(
         UserGroupMembership(

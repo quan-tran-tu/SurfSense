@@ -4,7 +4,7 @@ import { signOut } from "../../api/client";
 import type { FolderLink, FolderNode } from "../../api/types";
 import { keys } from "../../queryClient";
 import { setState, useStore } from "../../store";
-import { setSidebarWidth, toggleSection, useLayout } from "../../ui/layout";
+import { setSidebarWidth, toggleSection, useCollapsed, useLayout } from "../../ui/layout";
 import { guard, toast } from "../../ui/toast";
 import { addSystemNote } from "../chat/messages";
 import { importFolder, listImports, loadTree, removeImport, unshareFolder, useIngest } from "../folders";
@@ -23,7 +23,7 @@ import { ActBtn, byName, FolderChildren, FolderRow, GroupingRow, ScopePick, Tree
  */
 function Section({ id, title, actions, children }:
   { id: string; title: ReactNode; actions?: ReactNode; children: ReactNode }) {
-  const collapsed = useLayout((s) => !!s.collapsed[id]);
+  const collapsed = useCollapsed(id);
   return (
     <section className={collapsed ? "folded" : undefined}>
       <h2 className="fold" onClick={() => toggleSection(id)} title={collapsed ? "Show" : "Hide"}>
@@ -69,6 +69,26 @@ function Sessions() {
 
 /* ----------------------------------------------------------------- folders */
 
+/**
+ * A fold inside the Folders section — your own, your groups', other users'. An
+ * admin can have many of each, so each kind folds away on its own; `byDefault`
+ * folds the users' list until opened, since it grows with every account.
+ */
+function SubFold({ id, title, count, byDefault = false, children }:
+  { id: string; title: string; count: number; byDefault?: boolean; children: ReactNode }) {
+  const collapsed = useCollapsed(id, byDefault);
+  return (
+    <div className="subfold">
+      <div className="subhead" onClick={() => toggleSection(id, byDefault)} title={collapsed ? "Show" : "Hide"}>
+        <span className="caret">{collapsed ? "▸" : "▾"}</span>
+        <span className="name">{title}</span>
+        <span className="count">{count}</span>
+      </div>
+      {!collapsed && children}
+    </div>
+  );
+}
+
 /** Roots of a foreign origin, bucketed by the name they hang under. */
 function bucket(nodes: FolderNode[], origin: FolderNode["origin"], key: "group_name" | "owner_email") {
   const map = new Map<string, FolderNode[]>();
@@ -112,9 +132,12 @@ function Folders({ nodes, links }: { nodes: FolderNode[] | undefined; links: Fol
   const [picked, setPicked] = useState<File[] | null>(null);
   const progress = useIngest();
 
+  const isAdmin = useStore((s) => s.isAdmin);
   const own = (nodes ?? []).filter((n) => n.origin === "own" && n.parent_id == null).sort(byName);
-  const groups = bucket(nodes ?? [], "group", "group_name");
+  // Admins are never group members — they already read every user's folders.
+  const groups = isAdmin ? new Map<string, FolderNode[]>() : bucket(nodes ?? [], "group", "group_name");
   const users = bucket(nodes ?? [], "user", "owner_email");
+  const ownRows = own.map((f) => <FolderRow key={f.id} f={f} depth={0} nodes={nodes!} />);
 
   return (
     <Section id="folders" title="Folders" actions={<>
@@ -133,11 +156,24 @@ function Folders({ nodes, links }: { nodes: FolderNode[] | undefined; links: Fol
       {picked && <UploadDialog files={picked} onClose={() => setPicked(null)} />}
       <div>
         {nodes && !own.length && !groups.size && !users.size && <div className="empty">no folders indexed</div>}
-        {own.map((f) => <FolderRow key={f.id} f={f} depth={0} nodes={nodes!} />)}
-        {[...groups.keys()].sort().map((name) =>
-          <GroupingRow key={`g:${name}`} kind="group" name={name} roots={groups.get(name)!} nodes={nodes!} />)}
-        {[...users.keys()].sort().map((email) =>
-          <GroupingRow key={`u:${email}`} kind="user" name={email} roots={users.get(email)!} nodes={nodes!} />)}
+        {/* Only your own folders: no heading needed over them. */}
+        {!groups.size && !users.size ? ownRows : <>
+          <SubFold id="folders:own" title="My folders" count={own.length}>
+            {own.length ? ownRows : <div className="empty">none yet — + Add uploads one</div>}
+          </SubFold>
+          {groups.size > 0 && (
+            <SubFold id="folders:groups" title="Groups" count={groups.size}>
+              {[...groups.keys()].sort().map((name) =>
+                <GroupingRow key={`g:${name}`} kind="group" name={name} roots={groups.get(name)!} nodes={nodes!} />)}
+            </SubFold>
+          )}
+          {users.size > 0 && (
+            <SubFold id="folders:users" title="Users" count={users.size} byDefault>
+              {[...users.keys()].sort().map((email) =>
+                <GroupingRow key={`u:${email}`} kind="user" name={email} roots={users.get(email)!} nodes={nodes!} />)}
+            </SubFold>
+          )}
+        </>}
       </div>
       {progress.text != null && (
         <div>

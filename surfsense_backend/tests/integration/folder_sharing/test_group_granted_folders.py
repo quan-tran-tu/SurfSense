@@ -272,3 +272,57 @@ async def test_the_fingerprint_moves_when_a_grant_appears(
     await _grant(db_session, world["group"], world["theirs"])
     after = await live_link_fingerprint(db_session, db_search_space.id)
     assert before != after
+
+
+@pytest.mark.asyncio
+async def test_an_admin_cannot_be_added_to_a_group(db_session, world):
+    """Admins already read every user's folders; group membership is refused."""
+    from fastapi import HTTPException
+    from sqlalchemy import select
+
+    from app.auth.context import AuthContext
+    from app.routes.admin_routes import AdminGroupMemberAdd, add_group_member
+
+    other_admin = await _add_user(db_session, "admin2@surfsense.net", admin=True)
+    with pytest.raises(HTTPException) as refused:
+        await add_group_member(
+            world["group"].id,
+            AdminGroupMemberAdd(user_id=other_admin.id),
+            db_session,
+            AuthContext.session(world["admin"]),
+        )
+    assert refused.value.status_code == 400
+    members = await db_session.execute(
+        select(UserGroupMembership).where(UserGroupMembership.user_id == other_admin.id)
+    )
+    assert members.first() is None
+
+
+@pytest.mark.asyncio
+async def test_promoting_a_member_to_admin_drops_their_groups(
+    db_session, world, db_user
+):
+    """A member made admin leaves every group, so the group's folders go too."""
+    from sqlalchemy import select
+
+    from app.auth.context import AuthContext
+    from app.routes.admin_routes import AdminUserUpdate, update_user
+
+    await update_user(
+        world["member"].id,
+        AdminUserUpdate(is_superuser=True),
+        db_session,
+        AuthContext.session(world["admin"]),
+    )
+    left = (
+        (
+            await db_session.execute(
+                select(UserGroupMembership.user_id).where(
+                    UserGroupMembership.group_id == world["group"].id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert left == [db_user.id]

@@ -137,6 +137,9 @@ function UserGroups({ user }: { user: AdminUser }) {
   const inGroup = list.filter((_, i) => members[i].data?.some((m) => m.user_id === user.id));
   const others = list.filter((g) => !inGroup.includes(g));
 
+  if (user.is_superuser && !inGroup.length) {
+    return <div className="empty">admins aren't added to groups — they already read every user's folders</div>;
+  }
   return (
     <>
       {!inGroup.length && <div className="empty">not in any group</div>}
@@ -151,7 +154,7 @@ function UserGroups({ user }: { user: AdminUser }) {
           })}>Remove</button>
         </div>
       ))}
-      <div className="arow">
+      {!user.is_superuser && <div className="arow">
         <select value="" disabled={!others.length} onChange={(e) => {
           const g = others.find((x) => x.id === Number(e.target.value));
           if (!g) return;
@@ -164,7 +167,7 @@ function UserGroups({ user }: { user: AdminUser }) {
           <option value="">{others.length ? "Add to group…" : "already in every group"}</option>
           {others.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
         </select>
-      </div>
+      </div>}
     </>
   );
 }
@@ -204,7 +207,7 @@ function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
         <button className="sm" disabled={self} title={selfTitle} onClick={() => {
           const msg = u.is_superuser
             ? `Remove admin from ${u.email}?\n\nThey lose this page, and other users' folders disappear from their folder tree and answers.`
-            : `Make ${u.email} a system admin?\n\nThey get this page, and every non-admin user's folders appear — read-only — in their folder tree and answers.`;
+            : `Make ${u.email} a system admin?\n\nThey get this page, and every non-admin user's folders appear — read-only — in their folder tree and answers. They are removed from every user group.`;
           if (confirm(msg)) {
             guard(async () => {
               await adminApi("PATCH", `/users/${u.id}`, { json: { is_superuser: !u.is_superuser } });

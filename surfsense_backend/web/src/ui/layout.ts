@@ -38,5 +38,9 @@ useLayout.subscribe((s) => {
 
 export const setSidebarWidth = (w: number) => useLayout.setState({ sidebarWidth: clampWidth(w) });
 
-export const toggleSection = (id: string) =>
-  useLayout.setState((s) => ({ collapsed: { ...s.collapsed, [id]: !s.collapsed[id] } }));
+/** Whether a section is folded; `byDefault` holds until the user toggles it. */
+export const useCollapsed = (id: string, byDefault = false) =>
+  useLayout((s) => s.collapsed[id] ?? byDefault);
+
+export const toggleSection = (id: string, byDefault = false) =>
+  useLayout.setState((s) => ({ collapsed: { ...s.collapsed, [id]: !(s.collapsed[id] ?? byDefault) } }));
