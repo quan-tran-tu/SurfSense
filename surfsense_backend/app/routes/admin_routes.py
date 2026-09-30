@@ -1,7 +1,7 @@
 """System-admin API: manage users, their folders, and cross-user folder shares.
 
 Every route here is gated by :func:`app.users.require_admin` (``is_superuser``),
-which is seeded from ``config.ADMIN_EMAILS`` on login. Unlike the rest of the API,
+whose first holder is seeded by ``app.bootstrap_admin`` at deploy time. Unlike the rest of the API,
 these routes deliberately reach *across* the per-user search-space isolation
 boundary — that is the whole point of an admin — so they skip the usual
 ``check_permission`` / membership gates and rely solely on the superuser flag.
@@ -107,6 +107,7 @@ class AdminShareRead(BaseModel):
     token: str
     name: str | None = None
     source_folder_id: int
+    source_folder_name: str | None = None
     source_search_space_id: int
     created_by_id: str | None = None
     created_by_email: str | None = None
@@ -116,6 +117,11 @@ class AdminShareRead(BaseModel):
     revoked_at: datetime | None = None
     link_count: int = 0
     created_at: datetime
+
+
+class AdminShareUpdate(BaseModel):
+    # None clears the expiry: the share then lives until it is revoked.
+    expires_at: datetime | None
 
 
 class AdminGroupRead(BaseModel):
@@ -833,10 +839,11 @@ async def list_folder_shares(
     """Every folder share ever minted, newest first, with its importer count."""
     rows = (
         await session.execute(
-            select(SharedFolder, User.email, func.count(FolderLink.id))
+            select(SharedFolder, User.email, Folder.name, func.count(FolderLink.id))
             .outerjoin(User, User.id == SharedFolder.created_by_id)
+            .outerjoin(Folder, Folder.id == SharedFolder.source_folder_id)
             .outerjoin(FolderLink, FolderLink.share_id == SharedFolder.id)
-            .group_by(SharedFolder.id, User.email)
+            .group_by(SharedFolder.id, User.email, Folder.name)
             .order_by(SharedFolder.id.desc())
         )
     ).all()
@@ -846,6 +853,7 @@ async def list_folder_shares(
             token=s.token,
             name=s.name,
             source_folder_id=s.source_folder_id,
+            source_folder_name=folder_name,
             source_search_space_id=s.source_search_space_id,
             created_by_id=str(s.created_by_id) if s.created_by_id else None,
             created_by_email=email,
@@ -856,8 +864,32 @@ async def list_folder_shares(
             link_count=link_count,
             created_at=s.created_at,
         )
-        for s, email, link_count in rows
+        for s, email, folder_name, link_count in rows
     ]
+
+
+@router.patch("/folder-shares/{share_id}")
+async def update_share_expiry(
+    share_id: int,
+    body: AdminShareUpdate,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Set or clear a share's expiry.
+
+    Liveness is checked on every read, so this takes effect on the importers'
+    next query either way: a past date silences the share at once (links stay,
+    as with a user's revoke), a later one or none brings an expired share back.
+    """
+    share = await session.get(SharedFolder, share_id)
+    if not share:
+        raise HTTPException(status_code=404, detail="Share not found")
+    share.expires_at = body.expires_at
+    await session.commit()
+    logger.info(
+        f"Admin {auth.user.email} set share #{share_id} to expire at {body.expires_at or 'never'}"
+    )
+    return {"id": share.id, "expires_at": share.expires_at}
 
 
 @router.delete("/folder-shares/{share_id}")

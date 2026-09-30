@@ -90,6 +90,12 @@ run_migrations() {
         echo "  docker compose exec db psql -U \"\$DB_USER\" -d \"\$DB_NAME\" -c 'SELECT * FROM alembic_version;'" >&2
         exit 1
     fi
+
+    # Seeds the first system admin from ADMIN_EMAIL / ADMIN_PASSWORD while none
+    # exists; a no-op after that. Not fatal: a wrong password must not block a
+    # deploy, and the reason is in the log.
+    echo "Checking for a system admin..."
+    python -m app.bootstrap_admin || echo "WARNING: the first admin could not be seeded (see above)." >&2
 }
 
 # ── Service starters ─────────────────────────────────────────

@@ -189,6 +189,7 @@ celery_app = Celery(
         "app.tasks.celery_tasks.stale_notification_cleanup_task",
         "app.tasks.celery_tasks.stripe_reconciliation_task",
         "app.tasks.celery_tasks.refresh_token_cleanup_task",
+        "app.tasks.celery_tasks.folder_retention_task",
         "app.tasks.celery_tasks.auto_reload_task",
         "app.tasks.celery_tasks.gateway_tasks",
         "app.etl_pipeline.cache.eviction.task",
@@ -310,6 +311,13 @@ celery_app.conf.beat_schedule = {
     "purge-refresh-tokens": {
         "task": "purge_refresh_tokens",
         "schedule": crontab(hour="3", minute="41"),
+        "options": {"expires": 600},
+    },
+    # Delete folders past their retention period (a no-op unless the
+    # deployment sets *_FOLDER_RETENTION_DAYS), daily and off-peak.
+    "expire-old-folders": {
+        "task": "expire_old_folders",
+        "schedule": crontab(hour="3", minute="53"),
         "options": {"expires": 600},
     },
     # Prune the ETL parse cache (TTL + size budget) once daily, off-peak.

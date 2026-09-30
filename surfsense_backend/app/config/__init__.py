@@ -446,6 +446,17 @@ def initialize_image_gen_router():
         print(f"Warning: Failed to initialize Image Generation Router: {e}")
 
 
+def _retention_days(name: str) -> int | None:
+    """A retention setting in days; unset, empty or 0 means "keep forever"."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    days = int(raw)
+    if days < 0:
+        raise ValueError(f"{name} must be a whole number of days, not {raw!r}")
+    return days or None
+
+
 class Config:
     # Check if ffmpeg is installed
     if not is_ffmpeg_installed():
@@ -765,15 +776,18 @@ class Config:
     AUTH_TYPE = os.getenv("AUTH_TYPE", "LOCAL")
     REGISTRATION_ENABLED = os.getenv("REGISTRATION_ENABLED", "TRUE").upper() == "TRUE"
 
-    # Comma-separated emails that are auto-granted system-admin (is_superuser) on
-    # their next login. This is the bootstrap for the admin API (app/routes/
-    # admin_routes.py): with no endpoint to mint the first admin, the first one is
-    # seeded from config. Matched case-insensitively. Empty by default.
-    ADMIN_EMAILS = frozenset(
-        e.strip().lower()
-        for e in os.getenv("ADMIN_EMAILS", "").split(",")
-        if e.strip()
-    )
+    # The first system admin is not configured here: app/bootstrap_admin.py reads
+    # ADMIN_EMAIL / ADMIN_PASSWORD at deploy time (the migrate step) and creates
+    # it. Nothing promotes an account on login.
+
+    # Folder retention, in days, per kind of root folder; unset or 0 keeps them
+    # forever. A daily beat task (folder_retention_task) deletes older folders
+    # with their documents, counting from upload (Folder.created_at). Set by the
+    # deployment, not by users: session-only uploads, space-wide folders an admin
+    # uploaded, and every other space-wide folder (promoted ones included).
+    SESSION_FOLDER_RETENTION_DAYS = _retention_days("SESSION_FOLDER_RETENTION_DAYS")
+    ADMIN_FOLDER_RETENTION_DAYS = _retention_days("ADMIN_FOLDER_RETENTION_DAYS")
+    SPACE_FOLDER_RETENTION_DAYS = _retention_days("SPACE_FOLDER_RETENTION_DAYS")
 
     # Google OAuth
     GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")

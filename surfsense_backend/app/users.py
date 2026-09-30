@@ -135,19 +135,10 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     ) -> None:
         try:
             async with async_session_maker() as session:
-                values = {"last_login": datetime.now(UTC)}
-                # Bootstrap system admins from config: there is no endpoint to mint
-                # the first one, so a configured email is promoted on login. Never
-                # demote here — an admin removed from the list keeps access until an
-                # admin revokes it via the API, so a config typo can't lock everyone out.
-                if (
-                    not user.is_superuser
-                    and (user.email or "").lower() in config.ADMIN_EMAILS
-                ):
-                    values["is_superuser"] = True
-                    logger.info(f"Promoting {user.email} to system admin (ADMIN_EMAILS)")
                 await session.execute(
-                    update(User).where(User.id == user.id).values(**values)
+                    update(User)
+                    .where(User.id == user.id)
+                    .values(last_login=datetime.now(UTC))
                 )
                 await session.commit()
         except Exception as e:
@@ -418,8 +409,8 @@ async def require_admin(
     """Require a system admin (``is_superuser``). Gates the admin API.
 
     Deliberately allows PAT principals too: an admin's PAT is as privileged as
-    their session. The gate is the ``is_superuser`` flag, seeded from
-    ``config.ADMIN_EMAILS`` on login and thereafter managed via the admin API.
+    their session. The gate is the ``is_superuser`` flag: the first admin is
+    seeded by ``app.bootstrap_admin`` at deploy time, the rest via the admin API.
     """
     if not getattr(auth.user, "is_superuser", False):
         raise HTTPException(

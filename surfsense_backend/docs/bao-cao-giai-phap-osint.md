@@ -96,7 +96,7 @@ cho phép liệt kê/khóa/xóa tài khoản, cấp–thu quyền admin, xem và
 bất kỳ ai, thăng cấp thư mục bị kẹt trong một phiên, và **hard-revoke** một share
 — xóa hẳn các `FolderLink`, tức là gỡ thư mục khỏi kho của mọi người đã import,
 điều mà revoke thường không làm được. Toàn bộ cưỡng chế ở server (`require_admin`);
-nút bấm chỉ ẩn điều khiển chết. Admin đầu tiên seed bằng `ADMIN_EMAILS`.
+nút bấm chỉ ẩn điều khiển chết. Admin đầu tiên được tạo lúc deploy từ `ADMIN_EMAIL`/`ADMIN_PASSWORD` (`python -m app.bootstrap_admin` trong bước migrate), không còn nâng quyền khi đăng nhập.
 
 ### 3.7 Các tính năng thêm cho frontend
 
