@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSINT</title>
+<!--
+  serve.py rewrites the marker below into window.SS_CONFIG assignments (model,
+  key, backend). It must stay a classic inline script so Vite leaves it alone
+  and the marker survives the build.
+-->
+<script>window.SS_CONFIG = window.SS_CONFIG || {};/*__SS_CONFIG__*/</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

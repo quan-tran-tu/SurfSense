@@ -2,7 +2,7 @@
 # =============================================================================
 # SurfSense Backend — Multi-stage Dockerfile
 # =============================================================================
-# Graph: base → deps → models → {e2e, production}
+# Graph: base → deps → models → {e2e, production}; web → production
 #   e2e        — tests/ via additional_contexts (docker-compose.e2e.yml)
 #   production — published ghcr.io image (docker-build.yml pins target)
 # =============================================================================
@@ -132,6 +132,18 @@ ENV MALLOC_TRIM_THRESHOLD_=131072
 ENV MALLOC_MMAP_MAX_=65536
 
 
+# ─── Web client build (served by scripts/web/serve.py) ───────────────────────
+# Independent of the Python stages, so BuildKit builds it alongside them. Only
+# dist/ reaches the production image; Node itself never does.
+FROM node:22-slim AS web
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+
 # ─── Stage 4: e2e (production source + tests/ + e2e entrypoint) ─────────────
 # Built via `docker buildx build --target e2e`. The default build target is
 # `production` (the last stage), so this stage is opt-in for CI only.
@@ -171,6 +183,7 @@ FROM models AS production
 
 # Copy source code (tests/ excluded by .dockerignore — production never ships tests).
 COPY . .
+COPY --from=web /web/dist /app/web/dist
 
 # Install the project itself in editable mode. Dependencies were already
 # installed deterministically from uv.lock above, so --no-deps prevents any

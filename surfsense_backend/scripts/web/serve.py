@@ -60,7 +60,12 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PAGE = HERE / "index.html"
+# The React build (surfsense_backend/web, `npm run build`). When it is missing -
+# a checkout nobody built - the single-file page beside this script is served
+# instead, so `python serve.py` keeps working without Node.
+DIST = HERE.parent.parent / "web" / "dist"
+ROOT = DIST if (DIST / "index.html").exists() else HERE
+PAGE = ROOT / "index.html"
 MARKER = b"/*__SS_CONFIG__*/"
 
 
@@ -69,7 +74,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def __init__(self, *args, config: dict | None = None, **kwargs):
         self.config = config or {}
-        super().__init__(*args, directory=str(HERE), **kwargs)
+        super().__init__(*args, directory=str(ROOT), **kwargs)
 
     def do_GET(self):  # noqa: N802 - stdlib's casing
         if self.config and self.path.split("?")[0] in ("/", "/index.html"):
@@ -232,6 +237,7 @@ def main() -> int:
         return 1
 
     print(f"OSINT -> http://localhost:{port}   (Ctrl-C to stop)")
+    print(f"  Page:     {PAGE}")
     print(f"  Model:    {mode or 'not set, login will ask for a key'}")
     if "backend" in config:
         print(f"  Backend:  {config['backend'] or 'same origin as the page'} (login will not ask)")

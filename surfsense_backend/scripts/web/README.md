@@ -1,11 +1,21 @@
 # OSINT
 
-A single-file web client for a self-hosted SurfSense backend. It is
-[`ask.sh`](../ask.sh) in a browser: same API contract, same isolation model, no
-build step, no `node_modules`, no framework. One `index.html` — markup, styles
-and logic — that you can read top to bottom.
+A web client for a self-hosted SurfSense backend. It is
+[`ask.sh`](../ask.sh) in a browser: same API contract, same isolation model.
+
+The client is a React + TypeScript app in [`../../web`](../../web) (Vite).
+`serve.py` serves its build, `web/dist/`, and injects the deployment's config
+into it. The Docker image builds it in its `web` stage, so a deployed image
+always carries a current build. On a checkout nobody built, `serve.py` falls
+back to the older single-file `index.html` beside it, which needs no Node; that
+page is frozen and new features land only in `web/`.
 
 Use it when you want a UI but not the full `surfsense_web` Next.js app.
+
+```sh
+cd surfsense_backend/web
+npm ci && npm run build        # web/dist, which serve.py then serves
+```
 
 ## Run it
 
@@ -22,8 +32,8 @@ Then open <http://localhost:3000>, enter your email and password, and hit
 container's OpenAI-compatible endpoint: the model connection is created with
 `base_url = http://localhost:<vllm_port>/v1` — localhost *as the backend sees
 it*, since the backend is what dials the model — and the placeholder key
-`EMPTY`, so the login screen asks for no key at all. The model and base-URL
-fields under *Advanced* show the injected values and are locked.
+`EMPTY`, so the login screen asks for no key at all. The login screen never
+asks for the model, base URL or backend: those are the deployment's to set.
 
 Given a key, `serve.py` bakes it into the page as it serves it, so the login
 screen never asks for one and the key is never written to `localStorage`. Since
@@ -38,13 +48,11 @@ so this still works, and needs nothing but Python:
 python3 -m http.server 3000 --directory surfsense_backend/scripts/web
 ```
 
-The backend must be running (`http://localhost:8000` by default — change it
-under *Advanced*), along with its Celery worker, or folders will never finish
-indexing.
+The backend must be running (`http://localhost:8000` unless `--backend` says
+otherwise), along with its Celery worker, or folders will never finish indexing.
 
 `--backend <url>` bakes the API's address in the same way, so a deployment sets
-it once instead of every user typing it under *Advanced* — the field then shows
-the served value, locked, and nothing is kept in `localStorage`. See
+it once and nothing is kept in `localStorage`. See
 [Behind a domain](#behind-a-domain).
 
 ## The origin must be `http://localhost:3000`
@@ -71,13 +79,12 @@ on any free ports remotely and map them back to the expected ones locally:
 ssh -L 3000:localhost:39317 -L 8000:localhost:8123 you@server
 ```
 
-Then browse <http://localhost:3000>. No backend config changes, and nothing to
-type into *Advanced*. (`8123` here stands for whatever port the backend actually
-listens on.)
+Then browse <http://localhost:3000>. No backend config changes. (`8123` here
+stands for whatever port the backend actually listens on.)
 
 **To hit the server directly instead**, the two ports differ:
 
-- the **backend** port is unconstrained — just set *Advanced → Backend URL*;
+- the **backend** port is unconstrained — pass it as `--backend`;
 - the **frontend** port becomes your `Origin`, so it must be allow-listed in the
   backend's `.env`, which needs a restart:
 
@@ -157,25 +164,27 @@ boundary, so user A can never see or delete user B's documents. This client
 never lets you name a space by id. Because the space name matches, `ask.sh` and
 this page share one knowledge base — ingest from the CLI, ask from the browser.
 
-**Uploads belong to the session that made them.** With **this session only**
-ticked (the default), **+ Add** stamps the folder with the open session's thread
-id (`folders.owner_thread_id`): only that session can see, search, or cite it —
-questions, reports and the workspace tree alike — and other sessions, yours
-included, don't see it at all. Documents the admin grants to your group, and
-anything you promoted, stay in the sidebar for every session. Untick the box
-before **+ Add** to upload space-wide instead, the same as `ask.sh`; do that (or
-promote afterwards) for a folder you mean to share or grant to a group.
+**Uploads can belong to the session that made them.** After a folder is picked
+under **+ Add**, a dialog asks who may search it. **This session only** stamps the
+folder with the open session's thread id (`folders.owner_thread_id`): only that
+session can see, search, or cite it — questions, reports and the workspace tree
+alike — and other sessions, yours included, don't see it at all. **Every
+session** uploads it space-wide, the same as `ask.sh`; choose that (or promote
+afterwards) for a folder you mean to share or grant to a group. Documents the
+admin grants to your group, and anything you promoted, stay in the sidebar for
+every session.
 
 The **Folders** list badges every scoped folder (`this session` / `session #n`),
 and the **⤴** button promotes one to space-wide: the stamp is cleared on the
 whole subtree and every session sees it from the next question on. Nothing is
 copied or re-embedded by promotion, and there is no demotion — re-upload with
-the box ticked instead. Two sessions may each upload a folder with the same
+**This session only** instead. Two sessions may each upload a folder with the same
 name; they are distinct folders with distinct documents. Sharing (`Share`) is
 only offered on space-wide folders — promote first, then share.
 
 **Asking inside a subset of your folders.** Tick the checkbox on a folder row (own
-or **Imported**) and every question and report from then on is answered *only*
+or **Imported**) — or **All** in the Folders heading, which ticks every folder you
+can search and turns into **None** — and every question and report from then on is answered *only*
 from those folders — each one's whole subtree, so an uploaded directory tree is
 covered by ticking its root. This is how you ask "does anything about X appear in
 these two folders?" and get an answer you can trust: with a scope set, "nothing
@@ -215,10 +224,28 @@ thing a normal revoke can't do — **hard-revoke** a share, which deletes its
 base outright, not merely silenced. Every action is enforced server-side by
 `require_admin`; the button only hides dead controls from non-admins.
 
-Seed the first admin with `ADMIN_EMAILS` in the backend `.env` (comma-separated);
-those emails are promoted on their next login. After that, manage admins from the
-panel. The panel and its API bypass the per-user search-space isolation the rest
-of the app enforces — that is the point of an admin — so grant it sparingly.
+The first admin is seeded at deploy time, not at sign-in: set `ADMIN_EMAIL` and
+`ADMIN_PASSWORD` in the backend's environment and the migrate step
+(`python -m app.bootstrap_admin`) creates that account as an admin — or promotes
+an existing account with that email, but only if the password matches it. It does
+nothing once any active admin exists. After that, manage admins from the panel.
+The panel and its API bypass the per-user search-space isolation the rest of the
+app enforces — that is the point of an admin — so grant it sparingly.
+
+The **Folder shares** tab lists every shared folder; picking one shows each of its
+tokens with its importers as *owner / folder → importer*. Remove one importer, or
+hard-revoke a whole token, and set, clear or bring forward a token's expiry.
+
+An admin whose access is revoked loses the panel at once — on their next admin
+request, or within 30 seconds if they are just looking at it — and lands back in
+chat, with other users' folders gone from their tree.
+
+**Folder retention.** Set `SESSION_FOLDER_RETENTION_DAYS`,
+`ADMIN_FOLDER_RETENTION_DAYS` and `SPACE_FOLDER_RETENTION_DAYS` in the backend's
+environment and a daily beat task deletes root folders — documents included —
+that many days after upload: session-only uploads, space-wide folders an admin
+uploaded, and every other space-wide folder respectively. Unset keeps that kind
+forever, which is the default.
 
 ### User groups
 
@@ -305,14 +332,18 @@ called `hello` stays `hello` and keeps its history across sign-outs.
 - **Share tokens are remembered locally.** The backend has no endpoint that lists
   the shares you minted (only create / revoke / redeem), so this page keeps them
   in `localStorage` to give you a one-click **Revoke**. Clearing site data loses
-  the list, not the shares — a token you have written down still revokes.
+  the list, not the shares — a token you have written down still revokes. Each
+  token is minted with an expiry (1 to 90 days, or never; 7 by default), after
+  which its imports stop answering.
 - Your preferences are kept in `localStorage`. A key injected by
   `serve.py --deepseek` is *not* — it lives only in the page that served it. A key
   typed into the login field is. Either way it also ends up server-side on the
   model connection, which is how the backend calls the model at all. Your password
   is never persisted.
-- The session cookie is short-lived (~1h). A 401 triggers one transparent
-  re-login, exactly like `ask.sh`'s `api()`.
+- The session cookie is short-lived (~1h); the refresh cookie lasts two weeks
+  (sliding). A 401 trades the refresh cookie for a new session, so a reload keeps
+  you signed in — on the page you were on, `#admin` included — and **Sign out**
+  revokes the refresh token, or the next reload would sign you straight back in.
 
 See [`docs/surfsense-backend-api-cookbook.md`](../../docs/surfsense-backend-api-cookbook.md)
 for the underlying API contract.

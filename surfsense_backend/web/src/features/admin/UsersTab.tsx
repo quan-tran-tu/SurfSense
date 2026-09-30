@@ -1,0 +1,290 @@
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { adminApi } from "../../api/client";
+import type { AdminFolder, AdminUser } from "../../api/types";
+import { useStore } from "../../store";
+import { guard, toast } from "../../ui/toast";
+import { byName } from "../sidebar/FolderTree";
+import { adminKeys, Badge, refreshAdmin, useAdminUsers, when } from "./common";
+
+type SortKey = "email" | "is_superuser" | "is_active" | "last_login" | "folder_count" | "document_count";
+
+function sortValue(u: AdminUser, key: SortKey): string | number {
+  if (key === "email") return u.email.toLowerCase();
+  if (key === "last_login") return u.last_login ? Date.parse(u.last_login) : 0;
+  const v = u[key];
+  if (typeof v === "boolean") return v ? 1 : 0;
+  return v ?? 0;
+}
+
+const COLUMNS: { key: SortKey; label: string; num?: boolean }[] = [
+  { key: "email", label: "User" },
+  { key: "is_superuser", label: "Role" },
+  { key: "is_active", label: "Status" },
+  { key: "last_login", label: "Last sign-in" },
+  { key: "folder_count", label: "Folders", num: true },
+  { key: "document_count", label: "Documents", num: true },
+];
+
+function NewUserForm({ onDone }: { onDone: (id?: string) => void }) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [admin, setAdmin] = useState(false);
+  return (
+    <form className="card" autoComplete="off" onSubmit={(e) => {
+      e.preventDefault();
+      guard(async () => {
+        const made = await adminApi<AdminUser>("POST", "/users", {
+          json: { email: email.trim(), password, display_name: name.trim() || undefined, is_superuser: admin },
+        });
+        toast(`Created ${made.email}. They can sign in now with that password.`, "ok", 9000);
+        await refreshAdmin();
+        onDone(made.id);
+      });
+    }}>
+      <h4>New user</h4>
+      <div className="fgrid">
+        <div><label>Email</label><input type="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+        <div><label>Display name (optional)</label><input value={name} onChange={(e) => setName(e.target.value)} /></div>
+        <div><label>Password (min. 8 characters)</label>
+          <input type="password" minLength={8} required autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+        <label className="check"><input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} /> System admin</label>
+      </div>
+      <div className="actions">
+        <button type="submit" className="primary sm">Create user</button>
+        <button type="button" className="sm" onClick={() => onDone()}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+/** One user's folders, nested by parent_id, with the admin actions on each root. */
+function UserFolders({ user }: { user: AdminUser }) {
+  const q = useQuery({
+    queryKey: adminKeys.userFolders(user.id),
+    queryFn: () => adminApi<AdminFolder[]>("GET", `/users/${user.id}/folders`),
+  });
+  if (q.isPending) return <div className="empty">loading…</div>;
+  if (q.isError) return <div className="empty">could not load: {q.error.message}</div>;
+  const folders = q.data ?? [];
+  if (!folders.length) return <div className="empty">no folders</div>;
+
+  const ids = new Set(folders.map((f) => f.id));
+  const childrenOf = new Map<number | null, AdminFolder[]>();
+  for (const f of folders) {
+    const pid = f.parent_id != null && ids.has(f.parent_id) ? f.parent_id : null;
+    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+    childrenOf.get(pid)!.push(f);
+  }
+
+  const rows: React.ReactNode[] = [];
+  const walk = (pid: number | null, depth: number) => {
+    for (const f of (childrenOf.get(pid) ?? []).sort(byName)) {
+      rows.push(
+        <div key={f.id} className="arow" style={{ paddingLeft: `${8 + depth * 14}px` }}>
+          <div className="grow">
+            <span>{f.name}</span>
+            {depth === 0 && f.owner_thread_id != null && <Badge text={`session #${f.owner_thread_id}`} cls="off" />}
+          </div>
+          {depth === 0 && f.owner_thread_id != null && (
+            <button className="sm" title="Make this folder space-wide: every session of theirs will see it." onClick={() => {
+              if (confirm(`Make "${f.name}" (of ${user.email}) space-wide? All of their sessions will see it — and so will every admin.`)) {
+                guard(async () => {
+                  await adminApi("PATCH", `/folders/${f.id}/scope`);
+                  toast(`"${f.name}" is now space-wide.`);
+                  await refreshAdmin();
+                });
+              }
+            }}>⤴</button>
+          )}
+          {depth === 0 && (
+            <button className="sm danger" onClick={() => {
+              if (confirm(`Delete folder "${f.name}" (of ${user.email}) and its documents?`)) {
+                guard(async () => {
+                  await adminApi("DELETE", `/folders/${f.id}`);
+                  toast(`Deleting "${f.name}" (documents are queued for removal).`);
+                  await refreshAdmin();
+                });
+              }
+            }}>Delete</button>
+          )}
+        </div>,
+      );
+      walk(f.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return <div className="afolders">{rows}</div>;
+}
+
+function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
+  const me = useStore((s) => s.email);
+  // The server refuses self-demotion, self-deactivation and self-deletion; the
+  // page greys those out instead of offering buttons that can only 400.
+  const self = u.email === me;
+  const [name, setName] = useState(u.display_name ?? "");
+  const [pw, setPw] = useState("");
+  useEffect(() => setName(u.display_name ?? ""), [u.id, u.display_name]);
+  const selfTitle = self ? "You can't change your own access." : undefined;
+
+  return (
+    <aside className="udetail">
+      <header>
+        <div className="grow"><strong>{u.display_name || u.email}</strong><div className="sub">{u.email}</div></div>
+        <button className="sm" onClick={onClose}>✕</button>
+      </header>
+      <div className="sub" style={{ marginTop: 8, whiteSpace: "pre-line" }}>
+        {`${u.search_space_count} space(s) · ${u.folder_count} folder(s) · ${u.document_count} document(s)\nlast sign-in: ${when(u.last_login)}`}
+      </div>
+
+      <h3>Display name</h3>
+      <div className="stack">
+        <input placeholder="shown instead of the email" value={name} onChange={(e) => setName(e.target.value)} />
+        <button className="sm" onClick={() => guard(async () => {
+          await adminApi("PATCH", `/users/${u.id}`, { json: { display_name: name } });
+          toast("Name saved.");
+          await refreshAdmin();
+        })}>Save</button>
+      </div>
+
+      <h3>Access</h3>
+      <div className="actions" style={{ marginTop: 0 }}>
+        <button className="sm" disabled={self} title={selfTitle} onClick={() => {
+          const msg = u.is_superuser
+            ? `Remove admin from ${u.email}?\n\nThey lose this page, and other users' folders disappear from their folder tree and answers.`
+            : `Make ${u.email} a system admin?\n\nThey get this page, and every non-admin user's folders appear — read-only — in their folder tree and answers.`;
+          if (confirm(msg)) {
+            guard(async () => {
+              await adminApi("PATCH", `/users/${u.id}`, { json: { is_superuser: !u.is_superuser } });
+              await refreshAdmin();
+            });
+          }
+        }}>{u.is_superuser ? "Remove admin" : "Make admin"}</button>
+        <button className="sm" disabled={self} title={selfTitle} onClick={() => guard(async () => {
+          await adminApi("PATCH", `/users/${u.id}`, { json: { is_active: !u.is_active } });
+          await refreshAdmin();
+        })}>{u.is_active ? "Deactivate" : "Activate"}</button>
+      </div>
+      <div className="note">
+        {u.is_superuser
+          ? "Admins manage users and read every non-admin user's folders."
+          : "Their space-wide folders are readable by every admin; nothing of theirs can be changed from an admin's chat."}
+      </div>
+
+      <h3>Reset password</h3>
+      <div className="stack">
+        <input type="password" placeholder="new password (min. 8)" autoComplete="new-password"
+          value={pw} onChange={(e) => setPw(e.target.value)} />
+        <button className="sm" onClick={() => {
+          if (pw.length < 8) { toast("Passwords need at least 8 characters.", "warn"); return; }
+          guard(async () => {
+            await adminApi("POST", `/users/${u.id}/password`, { json: { password: pw } });
+            setPw("");
+            toast(`Password updated for ${u.email}. Browsers already signed in stay signed in ` +
+              "until their session expires — deactivate the account to cut them off now.", "ok", 12000);
+          });
+        }}>Set</button>
+      </div>
+
+      <h3>Folders</h3>
+      <UserFolders user={u} />
+
+      <h3>Danger zone</h3>
+      <div className="dangerzone">
+        <div className="sub">Deletes the account and everything it owns: spaces, folders, documents and chats.</div>
+        <button className="sm danger" style={{ marginTop: 8 }} disabled={self}
+          title={self ? "You can't delete your own account." : undefined} onClick={() => {
+            if (confirm(`Delete user ${u.email} and ALL their data (spaces, folders, documents, chats)?\n\nThis cannot be undone.`)) {
+              guard(async () => {
+                await adminApi("DELETE", `/users/${u.id}`);
+                toast(`Deleted ${u.email}.`);
+                onClose();
+                await refreshAdmin();
+              });
+            }
+          }}>Delete user</button>
+      </div>
+    </aside>
+  );
+}
+
+export function UsersTab({ selected, setSelected }:
+  { selected: string | null; setSelected: (id: string | null) => void }) {
+  const me = useStore((s) => s.email);
+  const users = useAdminUsers();
+  const [search, setSearch] = useState("");
+  const [role, setRole] = useState("");
+  const [status, setStatus] = useState("");
+  const [sort, setSort] = useState<{ key: SortKey; dir: number }>({ key: "email", dir: 1 });
+  const [creating, setCreating] = useState(false);
+
+  const all = users.data ?? [];
+  const q = search.trim().toLowerCase();
+  const shown = all
+    .filter((u) => !q || u.email.toLowerCase().includes(q) || (u.display_name ?? "").toLowerCase().includes(q))
+    .filter((u) => !role || (role === "admin") === u.is_superuser)
+    .filter((u) => !status || (status === "active") === u.is_active)
+    .sort((a, b) => {
+      const x = sortValue(a, sort.key), y = sortValue(b, sort.key);
+      return (x < y ? -1 : x > y ? 1 : 0) * sort.dir;
+    });
+  const admins = all.filter((u) => u.is_superuser).length;
+  const current = all.find((u) => u.id === selected);
+
+  return (
+    <section className="apane">
+      <div className="toolbar">
+        <input placeholder="Search by email or name…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select value={role} onChange={(e) => setRole(e.target.value)}>
+          <option value="">All roles</option>
+          <option value="admin">Admins</option>
+          <option value="user">Users</option>
+        </select>
+        <select value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">Any status</option>
+          <option value="active">Active</option>
+          <option value="inactive">Deactivated</option>
+        </select>
+        <span className="sub grow">{shown.length} of {all.length} users · {admins} admin{admins === 1 ? "" : "s"}</span>
+        <button className="primary sm" onClick={() => setCreating(!creating)}>+ New user</button>
+      </div>
+      {creating && <NewUserForm onDone={(id) => { setCreating(false); if (id) setSelected(id); }} />}
+      <div className="asplit">
+        <div className="tablewrap">
+          <table className="utable">
+            <thead><tr>
+              {COLUMNS.map((c) => (
+                <th key={c.key} className={c.num ? "num" : undefined}
+                  data-dir={sort.key === c.key ? (sort.dir > 0 ? "▲" : "▼") : undefined}
+                  onClick={() => setSort({ key: c.key, dir: sort.key === c.key ? -sort.dir : 1 })}>{c.label}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {!shown.length && (
+                <tr><td className="empty" colSpan={6}>
+                  {users.isPending ? "loading…" : all.length ? "no users match" : "no users"}
+                </td></tr>
+              )}
+              {shown.map((u) => (
+                <tr key={u.id} className={u.id === selected ? "sel" : ""}
+                  onClick={() => setSelected(u.id === selected ? null : u.id)}>
+                  <td>
+                    <div>{u.display_name || u.email}{u.email === me && <Badge text="you" />}</div>
+                    {u.display_name && <div className="sub">{u.email}</div>}
+                  </td>
+                  <td><Badge text={u.is_superuser ? "admin" : "user"} cls={u.is_superuser ? "admin" : ""} /></td>
+                  <td><Badge text={u.is_active ? "active" : "deactivated"} cls={u.is_active ? "" : "off"} /></td>
+                  <td className="sub">{when(u.last_login)}</td>
+                  <td className="num">{u.folder_count}</td>
+                  <td className="num">{u.document_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {current && <UserDetail key={current.id} u={current} onClose={() => setSelected(null)} />}
+      </div>
+    </section>
+  );
+}

@@ -27,3 +27,7 @@ wheels/
 htmlcov/
 
 tests/
+
+# The web client is built inside the image (the `web` stage).
+web/node_modules/
+web/dist/
