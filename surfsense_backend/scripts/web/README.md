@@ -213,8 +213,10 @@ Reports live in your search space, so `/reports` re-derives them from the server
 on demand — the in-chat "report ready" notes are just convenience and aren't
 persisted.
 
-**Report canvas.** The "report ready" note and `/reports` carry an **Open** link
-that opens the report in a new browser tab (`#/report/<id>`), so the chat keeps
+**Report canvas.** The sidebar's **Reports** section lists the reports of the open
+session (or, under **Tất cả**, of every session), one row per report with its
+version count; a row, like the **Open** link on the "report ready" note and in
+`/reports`, opens the report's newest version in a new browser tab (`#/report/<id>`), so the chat keeps
 running beside it. **Edit** shows the Markdown source (CodeMirror) next to a live
 preview; **View** shows the preview alone. **Save** (or Ctrl+S) overwrites the
 version on screen through `PUT /reports/{id}/content`. The picker lists every

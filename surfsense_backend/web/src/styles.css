@@ -341,3 +341,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .preview .doc h3 { font-size: 1.1em; }
 .md-editor { height: 100%; }
 .canvas-msg { margin: auto; color: var(--muted); padding: 24px; text-align: center; }
+
+/* ---- sidebar report list ---- */
+.seg.small { margin-bottom: 6px; }
+.seg.small button { padding: 2px 10px; font-size: 12px; }
+a.item.report { color: var(--fg); text-decoration: none; }

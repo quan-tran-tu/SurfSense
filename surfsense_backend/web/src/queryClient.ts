@@ -20,6 +20,7 @@ export const keys = {
   tree: (spaceId: number | null) => ["tree", spaceId] as const,
   folderDocs: (spaceId: number | null, folderId: number) => ["folderDocs", spaceId, folderId] as const,
   imports: (spaceId: number | null) => ["imports", spaceId] as const,
+  reports: (spaceId: number | null) => ["reports", spaceId] as const,
   admin: ["admin"] as const,
 };
 

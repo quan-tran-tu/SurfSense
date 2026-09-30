@@ -6,6 +6,7 @@
  */
 import { api, apiJson } from "../../api/client";
 import type { GenerateReportResult, Report, Template } from "../../api/types";
+import { keys, queryClient } from "../../queryClient";
 import { getState, setState } from "../../store";
 import { toast } from "../../ui/toast";
 import { sessionContext } from "../sessionContext";
@@ -58,11 +59,14 @@ function reportStyleFor(request: string) {
   return "detailed";
 }
 
+/** Every report in the space, newest first. */
+export const listReports = async () =>
+  (await apiJson<Report[]>("GET", `/api/v1/reports?search_space_id=${getState().spaceId}&limit=500`)) ?? [];
+
 /** Every report belonging to the current thread, newest first. */
 export async function threadReports() {
-  const { spaceId, threadId } = getState();
-  const all = await apiJson<Report[]>("GET", `/api/v1/reports?search_space_id=${spaceId}&limit=500`);
-  return (all ?? []).filter((r) => r.thread_id === threadId).sort((a, b) => b.id - a.id);
+  const { threadId } = getState();
+  return (await listReports()).filter((r) => r.thread_id === threadId).sort((a, b) => b.id - a.id);
 }
 
 /** Write (or, with parentId, revise) a report. One blocking call; the bubble carries a status. */
@@ -122,6 +126,8 @@ export async function reportCommand(request: string, parentId: number | null = n
       setStatus(msgId, `Report failed: ${e instanceof Error ? e.message : e}`, "warn");
     } finally {
       updateMessage(msgId, { streaming: false });
+      // A failed run can still leave a row behind, so refresh either way.
+      void queryClient.invalidateQueries({ queryKey: keys.reports(getState().spaceId) });
     }
   });
 }

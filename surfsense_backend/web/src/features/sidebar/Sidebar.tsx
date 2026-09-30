@@ -12,6 +12,7 @@ import { clearScope, folderLabel, otherSession, pruneScope, setScope } from "../
 import { createSession, deleteSession, listThreads, openThread } from "../session";
 import { addTemplates, removeTemplate } from "../templates";
 import { UploadDialog } from "./dialogs";
+import { ReportList } from "./Reports";
 import { ActBtn, byName, FolderChildren, FolderRow, GroupingRow, ScopePick, TreeRow } from "./FolderTree";
 
 /* ----------------------------------------------------------------- section */
@@ -307,7 +308,8 @@ export function Sidebar() {
         <Folders nodes={tree.data} links={links.data} />
         <Imports nodes={tree.data} links={links.data} />
         <Shares />
-        {/* Last: templates matter only when writing a report, the rest every question. */}
+        {/* Last: reports and their templates matter only when writing a report. */}
+        <Section id="reports" title="Reports"><ReportList /></Section>
         <Templates />
       </div>
       <div className="side-foot">

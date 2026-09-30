@@ -52,6 +52,8 @@ export interface Report {
   id: number;
   title: string;
   thread_id: number | null;
+  report_group_id: number | null;
+  created_at: string;
   report_metadata?: { status?: string } | null;
 }
 
