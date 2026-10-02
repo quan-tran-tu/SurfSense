@@ -18,8 +18,12 @@ import logging
 import os
 import re
 import tempfile
+import time
+import uuid
+from dataclasses import dataclass
 from enum import StrEnum
 from urllib.parse import quote
+from uuid import UUID
 
 import pypandoc
 import typst
@@ -35,6 +39,7 @@ from app.db import (
     SearchSpace,
     SearchSpaceMembership,
     get_async_session,
+    shielded_async_session,
 )
 from app.schemas import (
     ReportContentRead,
@@ -43,7 +48,7 @@ from app.schemas import (
     ReportGenerateResponse,
     ReportRead,
 )
-from app.schemas.reports import ReportVersionInfo
+from app.schemas.reports import ReportGenerateJob, ReportVersionInfo
 from app.templates.export_helpers import (
     get_html_css_path,
     get_reference_docx_path,
@@ -237,13 +242,76 @@ async def _get_version_siblings(
 # ---------------------------------------------------------------------------
 
 
+async def _check_generate_access(
+    request: ReportGenerateRequest, session: AsyncSession, auth: AuthContext
+) -> None:
+    await check_search_space_access(session, auth, request.search_space_id)
+
+    # A revision must target a report the caller can reach, in this space —
+    # otherwise parent_report_id would read another space's content.
+    if request.parent_report_id is not None:
+        parent = await _get_report_with_access(request.parent_report_id, session, auth)
+        if parent.search_space_id != request.search_space_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Parent report belongs to a different search space",
+            )
+
+
+async def _generate_report(request: ReportGenerateRequest) -> ReportGenerateResponse:
+    """Plan the report if needed, then write it. Access must already be checked.
+
+    Opens its own short-lived sessions: generation runs for minutes, and must
+    neither hold the request's pooled connection nor, as a job, outlive it.
+    """
+    from app.agents.chat.multi_agent_chat.subagents.builtins.deliverables.tools.report import (
+        generate_report_document,
+    )
+    from app.services.llm_service import get_agent_llm
+    from app.services.report_planning import plan_report_request
+
+    topic = (request.topic or "").strip()
+    queries = [q.strip() for q in (request.search_queries or []) if q.strip()]
+
+    if not topic or not queries:
+        async with shielded_async_session() as session:
+            llm = await get_agent_llm(session, request.search_space_id)
+            planned_topic, planned_queries = await plan_report_request(
+                llm, request.request
+            )
+        topic = topic or planned_topic
+        queries = queries or planned_queries
+
+    payload = await generate_report_document(
+        topic=topic,
+        search_space_id=request.search_space_id,
+        thread_id=request.thread_id,
+        source_strategy="kb_search",
+        search_queries=queries,
+        report_style=request.report_style,
+        user_instructions=request.user_instructions,
+        parent_report_id=request.parent_report_id,
+        folder_ids=request.folder_ids or None,
+    )
+
+    return ReportGenerateResponse(
+        status=payload.get("status", "failed"),
+        report_id=payload.get("report_id"),
+        title=payload.get("title", topic),
+        word_count=payload.get("word_count", 0),
+        is_revision=payload.get("is_revision", False),
+        message=payload.get("message"),
+        error=payload.get("error"),
+    )
+
+
 @router.post("/reports/generate", response_model=ReportGenerateResponse)
 async def generate_report_endpoint(
     request: ReportGenerateRequest,
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(get_auth_context),
 ):
-    """Write a report directly, bypassing the chat agent.
+    """Write a report directly, bypassing the chat agent, in one blocking call.
 
     The agent path reaches the same pipeline through two delegation hops
     (supervisor → ``deliverables`` → ``generate_report``), whose only purpose is
@@ -252,74 +320,110 @@ async def generate_report_endpoint(
     itself. The sixth (the KB queries) is one small generation, not tool-calling,
     so it works on models that cannot drive the agent at all.
 
+    The call stays open for the minutes generation takes, which a proxy read
+    timeout cuts off (the ingress 504s). The web client uses
+    ``/reports/generate/start`` instead; this stays for scripts and the old page.
+
     Returns 200 with ``status: "failed"`` when generation fails; the pipeline
     persists a failed report row and the caller wants its id.
     """
-    from app.agents.chat.multi_agent_chat.subagents.builtins.deliverables.tools.report import (
-        generate_report_document,
-    )
-    from app.services.llm_service import get_agent_llm
-    from app.services.report_planning import plan_report_request
-
     try:
-        await check_search_space_access(session, auth, request.search_space_id)
-
-        # A revision must target a report the caller can reach, in this space —
-        # otherwise parent_report_id would read another space's content.
-        if request.parent_report_id is not None:
-            parent = await _get_report_with_access(
-                request.parent_report_id, session, auth
-            )
-            if parent.search_space_id != request.search_space_id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Parent report belongs to a different search space",
-                )
-
-        topic = (request.topic or "").strip()
-        queries = [q.strip() for q in (request.search_queries or []) if q.strip()]
-
-        if not topic or not queries:
-            llm = await get_agent_llm(session, request.search_space_id)
-            planned_topic, planned_queries = await plan_report_request(
-                llm, request.request
-            )
-            topic = topic or planned_topic
-            queries = queries or planned_queries
-
-        # Generation runs for minutes. Release the request session first so it
-        # isn't holding a pooled connection (and its ACCESS SHARE locks) the
-        # whole time — the pipeline opens its own short-lived sessions.
+        await _check_generate_access(request, session, auth)
+        # Release the request session first so it isn't holding a pooled
+        # connection (and its ACCESS SHARE locks) for the whole run.
         await session.commit()
         await session.close()
-
-        payload = await generate_report_document(
-            topic=topic,
-            search_space_id=request.search_space_id,
-            thread_id=request.thread_id,
-            source_strategy="kb_search",
-            search_queries=queries,
-            report_style=request.report_style,
-            user_instructions=request.user_instructions,
-            parent_report_id=request.parent_report_id,
-            folder_ids=request.folder_ids or None,
-        )
-
-        return ReportGenerateResponse(
-            status=payload.get("status", "failed"),
-            report_id=payload.get("report_id"),
-            title=payload.get("title", topic),
-            word_count=payload.get("word_count", 0),
-            is_revision=payload.get("is_revision", False),
-            message=payload.get("message"),
-            error=payload.get("error"),
-        )
+        return await _generate_report(request)
     except HTTPException:
         raise
     except SQLAlchemyError:
         raise HTTPException(
             status_code=500, detail="Database error occurred while generating report"
         ) from None
+
+
+# Background report jobs, held in process. The api runs as one replica, so a
+# job is always polled where it runs; a restart loses running jobs, whose polls
+# then 404 (the report row, if the pipeline got that far, is still saved).
+_REPORT_JOB_TTL_SECONDS = 3600
+
+
+@dataclass
+class _ReportJob:
+    user_id: UUID
+    task: asyncio.Task | None = None
+    result: ReportGenerateResponse | None = None
+    finished_at: float | None = None
+
+
+_report_jobs: dict[str, _ReportJob] = {}
+
+
+def _prune_report_jobs() -> None:
+    cutoff = time.monotonic() - _REPORT_JOB_TTL_SECONDS
+    for job_id, job in list(_report_jobs.items()):
+        if job.finished_at is not None and job.finished_at < cutoff:
+            del _report_jobs[job_id]
+
+
+async def _run_report_job(job: _ReportJob, request: ReportGenerateRequest) -> None:
+    try:
+        job.result = await _generate_report(request)
+    except Exception as exc:
+        logger.exception("Background report generation failed")
+        job.result = ReportGenerateResponse(
+            status="failed",
+            title=(request.topic or request.request)[:200],
+            error=str(exc) or type(exc).__name__,
+        )
+    finally:
+        job.finished_at = time.monotonic()
+
+
+@router.post("/reports/generate/start", response_model=ReportGenerateJob)
+async def start_report_generation(
+    request: ReportGenerateRequest,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Start writing a report in the background; returns a job id at once.
+
+    Same inputs and outcome as ``/reports/generate``, but no request stays open
+    for the run, so no proxy timeout can cut it off. Poll
+    ``/reports/generate/jobs/{job_id}`` for the result.
+    """
+    try:
+        await _check_generate_access(request, session, auth)
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=500, detail="Database error occurred while generating report"
+        ) from None
+
+    _prune_report_jobs()
+    job_id = uuid.uuid4().hex
+    job = _ReportJob(user_id=auth.user.id)
+    # The registry holds the task, so it is not garbage-collected mid-run.
+    job.task = asyncio.create_task(_run_report_job(job, request))
+    _report_jobs[job_id] = job
+    return ReportGenerateJob(job_id=job_id, status="running")
+
+
+@router.get("/reports/generate/jobs/{job_id}", response_model=ReportGenerateJob)
+async def get_report_generation(
+    job_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Where a background report stands: ``running``, or ``done`` with its result."""
+    job = _report_jobs.get(job_id)
+    # Another user's job reads as missing, not forbidden.
+    if job is None or job.user_id != auth.user.id:
+        raise HTTPException(
+            status_code=404,
+            detail="Report job not found — the server may have restarted.",
+        )
+    if job.result is None:
+        return ReportGenerateJob(job_id=job_id, status="running")
+    return ReportGenerateJob(job_id=job_id, status="done", result=job.result)
 
 
 @router.get("/reports", response_model=list[ReportRead])

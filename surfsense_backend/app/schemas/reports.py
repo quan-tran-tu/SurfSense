@@ -79,6 +79,18 @@ class ReportGenerateResponse(BaseModel):
     error: str | None = None
 
 
+class ReportGenerateJob(BaseModel):
+    """A report being written in the background; poll until ``status`` is done.
+
+    ``result`` is set once the job finishes, and carries the same outcome the
+    blocking generate call returns — ``failed`` included.
+    """
+
+    job_id: str
+    status: Literal["running", "done"]
+    result: ReportGenerateResponse | None = None
+
+
 class ReportBase(BaseModel):
     """Base report schema."""
 

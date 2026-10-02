@@ -1,11 +1,11 @@
 /*
- * /report and /revise POST to /reports/generate, which runs the same report
+ * /report and /revise start /reports/generate/start and poll it; it runs the same report
  * pipeline the generate_report tool wraps — no agent turn, so every command works
  * on whatever model the space is pinned to. /export and /reports use the report
  * CRUD/export routes.
  */
-import { api, apiJson } from "../../api/client";
-import type { GenerateReportResult, Report, Template } from "../../api/types";
+import { api, ApiError, apiJson } from "../../api/client";
+import type { GenerateReportResult, Report, ReportJob, Template } from "../../api/types";
 import { keys, queryClient } from "../../queryClient";
 import { getState, setState } from "../../store";
 import { toast } from "../../ui/toast";
@@ -69,7 +69,42 @@ export async function threadReports() {
   return (await listReports()).filter((r) => r.thread_id === threadId).sort((a, b) => b.id - a.id);
 }
 
-/** Write (or, with parentId, revise) a report. One blocking call; the bubble carries a status. */
+const POLL_MS = 3000;
+// Polls that fail in a row before giving up — enough to ride out a proxy hiccup
+// or a pod restart's first seconds, not a backend that is gone.
+const MAX_POLL_FAILURES = 10;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Start a report in the background and poll until it is written.
+ *
+ * Writing takes minutes; held open as one request, the ingress's read timeout
+ * cuts it off with a 504 while the server carries on and saves the report.
+ * Short polls have no such limit.
+ */
+async function generateReport(body: Record<string, unknown>): Promise<GenerateReportResult | null> {
+  const { job_id } = await apiJson<ReportJob>("POST", "/api/v1/reports/generate/start", { json: body });
+  let failures = 0;
+  for (;;) {
+    await sleep(POLL_MS);
+    try {
+      const job = await apiJson<ReportJob>("GET", `/api/v1/reports/generate/jobs/${job_id}`);
+      failures = 0;
+      if (job.status === "done") return job.result;
+    } catch (e) {
+      // Missing means the server restarted and lost the job; the session is gone
+      // too on a 401. Neither is worth retrying.
+      if (e instanceof ApiError && (e.status === 404 || e.status === 401)) {
+        throw new Error(e.status === 404
+          ? "the server restarted while writing it. /reports shows whether it was saved."
+          : e.message);
+      }
+      if (++failures >= MAX_POLL_FAILURES) throw e;
+    }
+  }
+}
+
+/** Write (or, with parentId, revise) a report. Started, then polled; the bubble carries a status. */
 /**
  * `template` is the Report button's pick: given (even as null), the request is
  * taken literally. Left undefined, a leading "t<id>" — the /report form — names
@@ -101,18 +136,16 @@ export async function reportCommand(
 
     try {
       const { spaceId, threadId, scopeFolderIds } = getState();
-      const res = await apiJson<GenerateReportResult>("POST", "/api/v1/reports/generate", {
-        json: {
-          search_space_id: spaceId,
-          thread_id: threadId,
-          request,
-          report_style: reportStyleFor(request),
-          user_instructions: buildReportInstructions(request, tpl),
-          parent_report_id: parentId,
-          // Same scope as a question. With it set the server refuses to write a
-          // report when those folders yield nothing.
-          folder_ids: scopeFolderIds.length ? scopeFolderIds : undefined,
-        },
+      const res = await generateReport({
+        search_space_id: spaceId,
+        thread_id: threadId,
+        request,
+        report_style: reportStyleFor(request),
+        user_instructions: buildReportInstructions(request, tpl),
+        parent_report_id: parentId,
+        // Same scope as a question. With it set the server refuses to write a
+        // report when those folders yield nothing.
+        folder_ids: scopeFolderIds.length ? scopeFolderIds : undefined,
       });
 
       if (!res || res.status !== "ready" || !res.report_id) {

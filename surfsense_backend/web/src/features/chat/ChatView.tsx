@@ -11,8 +11,26 @@ import { ask } from "./ask";
 import { runCommand } from "./commands";
 import { reportCommand } from "./reports";
 
+/**
+ * The line under a message. While a reply is in flight it is a live indicator —
+ * the phase ("Thinking", "Searching your documents", …) with moving dots;
+ * afterwards it is plain text, an error or warning if anything.
+ */
+function Status({ m }: { m: ChatMessage }) {
+  const live = m.streaming && !m.statusKind;
+  if (!live) return <div className={`status ${m.statusKind ?? ""}`}>{m.status}</div>;
+  // Nothing reported yet: the request is out and the server is still on it.
+  const label = (m.status || (m.text ? "" : "Thinking")).replace(/\s*(…|\.{3})\s*$/, "");
+  if (!label) return null;
+  return (
+    <div className="status live" role="status">
+      <span className="shimmer">{label}</span>
+      <span className="dots" aria-hidden="true"><i /><i /><i /></span>
+    </div>
+  );
+}
+
 function Message({ m }: { m: ChatMessage }) {
-  const model = useStore((s) => s.model);
   if (m.role === "system") {
     return (
       <div className="msg system">
@@ -27,11 +45,14 @@ function Message({ m }: { m: ChatMessage }) {
   }
   return (
     <div className={`msg ${m.role}`}>
-      <div className="who">{m.role === "user" ? "You" : model}</div>
-      <div className={`bubble${m.streaming ? " cursor" : ""}`}>
-        {m.role === "user" ? m.text : <Markdown text={m.text} msgId={m.id} />}
-      </div>
-      <div className={`status ${m.statusKind ?? ""}`}>{m.status}</div>
+      <div className="who">{m.role === "user" ? "You" : "Assistant"}</div>
+      {/* No empty bubble with a lone cursor while waiting: the status says it. */}
+      {(m.role === "user" || m.text) && (
+        <div className={`bubble${m.streaming ? " cursor" : ""}`}>
+          {m.role === "user" ? m.text : <Markdown text={m.text} msgId={m.id} />}
+        </div>
+      )}
+      <Status m={m} />
     </div>
   );
 }

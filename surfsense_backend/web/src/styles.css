@@ -133,7 +133,29 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 .status { color: var(--muted); font-size: 12px; font-style: italic; }
 .status.err { color: var(--err); font-style: normal; }
 .status.warn { color: var(--warn); font-style: normal; }
-.cursor::after { content: "▍"; opacity: .6; }
+.cursor::after { content: "▍"; opacity: .6; animation: blink 1s steps(2, start) infinite; }
+
+/* A reply in flight: the phase in a slow shimmer, then three bouncing dots. */
+.status.live { display: inline-flex; align-items: baseline; gap: 6px; font-size: 13px; font-style: normal; }
+.status.live .shimmer {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--fg) 50%, var(--muted) 65%, var(--muted) 100%);
+  background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+.status.live .dots { display: inline-flex; gap: 3px; }
+.status.live .dots i {
+  width: 4px; height: 4px; border-radius: 50%; background: var(--muted);
+  animation: dot 1.2s ease-in-out infinite;
+}
+.status.live .dots i:nth-child(2) { animation-delay: .15s; }
+.status.live .dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes dot { 0%, 70%, 100% { opacity: .3; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
+@keyframes blink { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) {
+  .status.live .shimmer { animation: none; background: none; color: var(--muted); }
+  .status.live .dots i, .cursor::after { animation: none; }
+}
 
 /* A client-side note (command output: report ready, /help, …). Not persisted;
    it re-derives from the server on demand (/reports), so a reload dropping it

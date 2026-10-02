@@ -32,16 +32,12 @@ function textBlocks() {
 
 interface StreamEvent { type?: string; id?: string; delta?: string; toolName?: string; tool_name?: string }
 
-/** Human-readable label for the pre-answer events, so a silent run is diagnosable. */
+/** The phase a pre-answer event stands for, in plain words — no model or tool names. */
 function describeEvent(ev: StreamEvent & { type: string }) {
   const name = ev.toolName ?? ev.tool_name ?? "";
-  if (ev.type.startsWith("tool")) {
-    if (name.includes("search")) return "searching the knowledge base…";
-    return name ? `calling ${name}…` : "calling a tool…";
-  }
-  if (ev.type.includes("thinking") || ev.type.includes("reasoning")) return "thinking…";
-  if (ev.type === "task" || ev.type.includes("agent")) return "delegating to the knowledge_base agent…";
-  return "working…";
+  if (ev.type.startsWith("tool") && name.includes("search")) return "Searching your documents";
+  if (ev.type.includes("thinking") || ev.type.includes("reasoning")) return "Thinking";
+  return "Working";
 }
 
 /** Mark the composer busy for the length of `fn`. */
@@ -99,7 +95,7 @@ export async function ask(question: string) {
             blocks.start(ev.id);
           } else if (ev.type === "text-delta" && typeof ev.delta === "string") {
             blocks.delta(ev.id, ev.delta);
-            updateMessage(msgId, { text: blocks.answer() });
+            updateMessage(msgId, { text: blocks.answer(), status: "Writing the answer" });
           } else if (!blocks.answer() && typeof ev.type === "string") {
             setStatus(msgId, describeEvent(ev as StreamEvent & { type: string }));
           }

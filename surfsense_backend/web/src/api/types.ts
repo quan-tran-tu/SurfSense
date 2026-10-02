@@ -75,6 +75,13 @@ export interface GenerateReportResult {
   error?: string;
 }
 
+/** A report being written in the background; `result` lands once it is done. */
+export interface ReportJob {
+  job_id: string;
+  status: "running" | "done";
+  result: GenerateReportResult | null;
+}
+
 export interface Chunk { id: number; content: string }
 
 /* -------------------------------------------------------------------- admin */
