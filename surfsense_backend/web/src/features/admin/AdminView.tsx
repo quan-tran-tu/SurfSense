@@ -18,7 +18,7 @@ import { UsersTab } from "./UsersTab";
 const TABS = [
   { id: "users", label: "Users" },
   { id: "groups", label: "User groups" },
-  { id: "shares", label: "Folder shares" },
+  { id: "shares", label: "Folder access" },
   { id: "settings", label: "Settings" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];

@@ -99,6 +99,15 @@ export interface AdminFolder {
   promoted_from_thread_id: number | null;
 }
 
+/** A space-wide root folder as the admin's Folder access tab lists it. */
+export interface AdminRootFolder {
+  id: number;
+  name: string;
+  owner_email: string | null;
+  document_count: number;
+  group_ids: number[];
+}
+
 export interface AdminGroup {
   id: number;
   name: string;

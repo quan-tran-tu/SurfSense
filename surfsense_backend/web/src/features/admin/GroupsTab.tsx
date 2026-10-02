@@ -15,7 +15,7 @@ import { guard, toast } from "../../ui/toast";
 import { adminKeys, Badge, refreshAdmin, useAdminGroups, useAdminUsers } from "./common";
 
 /** A one-shot <select> that fires `onPick` and resets itself. */
-function PickerRow({ placeholder, empty, options, onPick }:
+export function PickerRow({ placeholder, empty, options, onPick }:
   { placeholder: string; empty: string; options: { value: string; label: string }[]; onPick: (v: string) => void }) {
   return (
     <div className="arow">
@@ -214,7 +214,8 @@ export function GroupsTab() {
       <h3 style={{ marginTop: 0 }}>User groups — everyone in a group reads the folders granted to it</h3>
       <div className="sub" style={{ marginBottom: 10 }}>
         Click a group to add or remove its members and grant it folders. A user's
-        groups can also be changed from their panel on the Users tab.
+        groups can also be changed from their panel on the Users tab, and a
+        folder's groups from the Folder access tab.
       </div>
       <form className="toolbar" autoComplete="off" onSubmit={(e) => {
         e.preventDefault();

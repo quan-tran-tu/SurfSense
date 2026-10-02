@@ -57,13 +57,22 @@ aside h2 {
 }
 .item {
   display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px;
-  cursor: pointer; font-size: 13px;
+  cursor: pointer; font-size: 13px; position: relative;
 }
 .item:hover { background: var(--panel-2); }
 .item.active { background: rgba(76, 141, 255, .16); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
 .item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item .act { opacity: 0; flex: none; }
 .item:hover .act { opacity: 1; }
+/* A row's actions float over its right end on hover instead of reserving room,
+   so names keep their width and counts line up down the tree. */
+.item .acts {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: none; align-items: center; gap: 4px; padding-left: 14px;
+  background: linear-gradient(to right, transparent, var(--panel-2) 12px);
+}
+.item:hover .acts, .item:focus-within .acts { display: flex; }
+.item .acts .act { opacity: 1; }
 .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 2px 8px; }
 .ro { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .7; }
 .item .dead { color: var(--warn); font-size: 11px; flex: none; }
@@ -214,7 +223,10 @@ a.cite:hover, a.cite.on { background: var(--accent); border-color: var(--accent)
 
 /* ---- folder tree ---- */
 .item .caret { width: 12px; flex: none; color: var(--muted); font-size: 10px; text-align: center; }
-.item .count { flex: none; color: var(--muted); font-size: 11px; }
+.item .count { flex: none; min-width: 22px; text-align: right; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* Session-only folder: a quiet tag, accent when it is this session's. */
+.item .smark { flex: none; font-size: 10px; color: var(--muted); }
+.item .smark.mine { color: var(--accent); }
 .item.file { color: var(--muted); cursor: pointer; }
 .item.file:hover { color: var(--fg); }
 .item.group > .name { font-weight: 600; }

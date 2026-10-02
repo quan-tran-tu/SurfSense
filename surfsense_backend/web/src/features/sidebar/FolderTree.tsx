@@ -59,11 +59,13 @@ const Note = ({ depth, children }: { depth: number; children: ReactNode }) =>
 /**
  * A row that expands. `children` renders only while open, so whatever it fetches
  * is fetched on first open. `lead` goes before the name (a checkbox), `trail`
- * after it (badges, buttons); each must stop propagation or it toggles the row.
+ * after it (status marks), and `actions` floats over the row's right end on
+ * hover — taking no room, so every row's count lines up. Each must stop
+ * propagation or it toggles the row.
  */
-export function TreeRow({ nodeKey, depth, name, nameTitle, count, cls = "", lead, trail, children }: {
+export function TreeRow({ nodeKey, depth, name, nameTitle, count, cls = "", lead, trail, actions, children }: {
   nodeKey: string; depth: number; name: string; nameTitle?: string; count?: number; cls?: string;
-  lead?: ReactNode; trail?: ReactNode; children: () => ReactNode;
+  lead?: ReactNode; trail?: ReactNode; actions?: ReactNode; children: () => ReactNode;
 }) {
   const [open, setOpen] = useState(openNodes.has(nodeKey));
   const toggle = () => {
@@ -76,8 +78,9 @@ export function TreeRow({ nodeKey, depth, name, nameTitle, count, cls = "", lead
         <span className="caret">{open ? "▾" : "▸"}</span>
         {lead}
         <span className="name" title={nameTitle}>{name}</span>
-        {count ? <span className="count">{count}</span> : null}
         {trail}
+        {count ? <span className="count">{count}</span> : null}
+        {actions && <span className="acts">{actions}</span>}
       </div>
       {open && <div>{children()}</div>}
     </div>
@@ -133,14 +136,20 @@ export function FolderRow({ f, depth, nodes }: { f: FolderNode; depth: number; n
     : <ScopePick ids={[f.id]} names={{ [f.id]: folderLabel(f) }}
         title="Tick to ask questions only inside this folder (and everything under it)." />;
 
+  // Whose session it belongs to, so two same-named rows are tellable apart.
+  const trail = actionable && scoped && (
+    <span className={`smark${mine ? " mine" : ""}`}
+      title={mine ? "Session-only: just this chat session sees it." : `Session-only: belongs to session #${f.owner_thread_id}.`}>
+      {mine ? "session" : `#${f.owner_thread_id}`}
+    </span>
+  );
+
   // Promoted out of a session that still exists: ⤵ can put it back there.
   const from = f.promoted_from_thread_id;
-  const trail = actionable && (
+  const actions = actionable && (
     <>
       {scoped ? (
         <>
-          {/* Label whose it is, so two same-named rows are tellable apart. */}
-          <span className="badge">{mine ? "this session" : `session #${f.owner_thread_id}`}</span>
           <ActBtn label={ICON.promote} title="Make this folder space-wide: every chat session will see it." onClick={() =>
             confirmThen({
               title: `Make "${f.name}" space-wide?`,
@@ -177,7 +186,7 @@ export function FolderRow({ f, depth, nodes }: { f: FolderNode; depth: number; n
     <>
       <TreeRow nodeKey={`f:${f.id}`} depth={depth} name={f.name} count={f.document_count}
         nameTitle={f.origin !== "own" ? `${folderLabel(f)} — read-only` : undefined}
-        lead={lead} trail={trail}>
+        lead={lead} trail={trail} actions={actions}>
         {() => <FolderChildren f={f} depth={depth + 1} nodes={nodes} />}
       </TreeRow>
       {sharing && <ShareDialog folderId={f.id} path={f.name} onClose={() => setSharing(false)} />}
@@ -189,7 +198,7 @@ export function FolderRow({ f, depth, nodes }: { f: FolderNode; depth: number; n
  * A grouping row: one more folder holding several read-only roots, with a
  * checkbox that scopes a question to all of them at once. `user` is a user as a
  * system admin sees them; `group` is a user group you belong to, holding the
- * folders an admin granted it.
+ * folders an admin granted it. The sub-fold it sits in already says which.
  */
 export function GroupingRow({ kind, name, roots, nodes }:
   { kind: "user" | "group"; name: string; roots: FolderNode[]; nodes: FolderNode[] }) {
@@ -199,7 +208,7 @@ export function GroupingRow({ kind, name, roots, nodes }:
       lead={<ScopePick ids={roots.map((r) => r.id)}
         names={Object.fromEntries(roots.map((r) => [r.id, folderLabel(r)]))}
         title={`Tick to ask questions only inside ${owned}.`} />}
-      trail={<span className="badge">{kind}</span>}>
+>
       {() => roots.map((r) => <FolderRow key={r.id} f={r} depth={1} nodes={nodes} />)}
     </TreeRow>
   );

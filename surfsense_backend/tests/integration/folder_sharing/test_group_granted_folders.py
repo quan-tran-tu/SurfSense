@@ -326,3 +326,27 @@ async def test_promoting_a_member_to_admin_drops_their_groups(
         .all()
     )
     assert left == [db_user.id]
+
+
+@pytest.mark.asyncio
+async def test_admin_folder_list_carries_each_roots_groups(
+    db_session, world, db_search_space
+):
+    """The admin's folder list: space-wide roots of every user, with their grants."""
+    from app.routes.admin_routes import list_root_folders
+
+    thread = NewChatThread(title="t", search_space_id=db_search_space.id)
+    db_session.add(thread)
+    await db_session.flush()
+    session_only = await _add_folder(
+        db_session, db_search_space, "Session Upload", owner_thread_id=thread.id
+    )
+
+    rows = {r.id: r for r in await list_root_folders(db_session, None)}
+    assert rows[world["general"].id].group_ids == [world["group"].id]
+    assert rows[world["general"].id].owner_email == "admin@surfsense.net"
+    assert rows[world["mine"].id].group_ids == []
+    assert world["theirs"].id in rows
+    # Subfolders and session-scoped folders can't be granted from this list.
+    assert world["policies"].id not in rows
+    assert session_only.id not in rows

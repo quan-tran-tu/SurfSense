@@ -54,12 +54,14 @@ function Sessions() {
           <div key={t.id} className={`item${t.id === threadId ? " active" : ""}`}
             onClick={() => t.id !== threadId && guard(() => openThread(t))}>
             <span className="name">{t.title}</span>
-            <ActBtn label={ICON.remove} cls="danger" title="Delete this session" onClick={() =>
-              confirmThen({
-                title: `Delete session "${t.title}"?`,
-                message: "All of its messages are deleted. Folders uploaded for this session only become visible to every session.",
-                confirmLabel: "Delete", danger: true,
-              }, () => deleteSession(t))} />
+            <span className="acts">
+              <ActBtn label={ICON.remove} cls="danger" title="Delete this session" onClick={() =>
+                confirmThen({
+                  title: `Delete session "${t.title}"?`,
+                  message: "All of its messages are deleted. Folders uploaded for this session only become visible to every session.",
+                  confirmLabel: "Delete", danger: true,
+                }, () => deleteSession(t))} />
+            </span>
           </div>
         ))}
       </div>
@@ -75,7 +77,7 @@ function Sessions() {
 /* ----------------------------------------------------------------- folders */
 
 /**
- * A fold inside the Folders section — your own, your groups', other users'. An
+ * A fold inside the Folders section — your own, your groups', other people's. An
  * admin can have many of each, so each kind folds away on its own; `byDefault`
  * folds the users' list until opened, since it grows with every account.
  */
@@ -173,7 +175,7 @@ function Folders({ nodes, links }: { nodes: FolderNode[] | undefined; links: Fol
             </SubFold>
           )}
           {users.size > 0 && (
-            <SubFold id="folders:users" title="Users" count={users.size} byDefault>
+            <SubFold id="folders:users" title="People" count={users.size} byDefault>
               {[...users.keys()].sort().map((email) =>
                 <GroupingRow key={`u:${email}`} kind="user" name={email} roots={users.get(email)!} nodes={nodes!} />)}
             </SubFold>
@@ -214,12 +216,14 @@ function Templates() {
               : "No headings detected — this template is used as a style exemplar only.") +
             `\n\nUse it: /report t${t.id} <query>`)}>
             <span className="name">t{t.id} · {t.name}</span>
-            <ActBtn label={ICON.remove} cls="danger" title="Remove this template" onClick={() =>
-              confirmThen({
-                title: `Remove template t${t.id} "${t.name}"?`,
-                message: "It is kept only in this browser, so it can't be restored — upload the file again to bring it back.",
-                confirmLabel: "Remove", danger: true,
-              }, () => removeTemplate(t.id))} />
+            <span className="acts">
+              <ActBtn label={ICON.remove} cls="danger" title="Remove this template" onClick={() =>
+                confirmThen({
+                  title: `Remove template t${t.id} "${t.name}"?`,
+                  message: "It is kept only in this browser, so it can't be restored — upload the file again to bring it back.",
+                  confirmLabel: "Remove", danger: true,
+                }, () => removeTemplate(t.id))} />
+            </span>
           </div>
         ))}
       </div>
@@ -247,12 +251,12 @@ function Imports({ nodes, links }: { nodes: FolderNode[] | undefined; links: Fol
               lead={<ScopePick ids={[link.source_folder_id]}
                 names={{ [link.source_folder_id]: `${link.folder_name} (imported)` }}
                 title="Tick to ask questions only inside this imported folder." />}
-              trail={<>
-                {link.live === false && (
-                  <span className="dead" title={link.state === "expired"
-                    ? "The share's expiry passed, so it no longer answers questions."
-                    : "The owner revoked this share, so it no longer answers questions."}>{link.state}</span>
-                )}
+              trail={link.live === false && (
+                <span className="dead" title={link.state === "expired"
+                  ? "The share's expiry passed, so it no longer answers questions."
+                  : "The owner revoked this share, so it no longer answers questions."}>{link.state}</span>
+              )}
+              actions={<>
                 <ActBtn label={ICON.remove} cls="danger" title="Remove this import" onClick={() =>
                   confirmThen({
                     title: `Remove the imported folder "${link.folder_name}"?`,
@@ -293,16 +297,18 @@ function Shares() {
           <div className="item" style={{ cursor: "default" }}>
             <span className="name">{s.folder_name ?? `folder #${s.source_folder_id}`}</span>
             {s.state !== "live" && <span className="badge off">{s.state}</span>}
-            <ActBtn label={ICON.remove} cls="danger" title={s.state === "live" ? "Revoke this token" : "Remove this ended token"}
-              onClick={() => confirmThen(s.state === "live" ? {
-                title: `Revoke the token for "${s.folder_name}"?`,
-                message: "Everyone who imported it loses access on their next question. A revoked token can't be brought back — share again for a new one.",
-                confirmLabel: "Revoke", danger: true,
-              } : {
-                title: `Remove the ${s.state} token for "${s.folder_name}"?`,
-                message: "It already grants nothing; this only clears it from the list.",
-                confirmLabel: "Remove",
-              }, () => unshareFolder(s.token))} />
+            <span className="acts">
+              <ActBtn label={ICON.remove} cls="danger" title={s.state === "live" ? "Revoke this token" : "Remove this ended token"}
+                onClick={() => confirmThen(s.state === "live" ? {
+                  title: `Revoke the token for "${s.folder_name}"?`,
+                  message: "Everyone who imported it loses access on their next question. A revoked token can't be brought back — share again for a new one.",
+                  confirmLabel: "Revoke", danger: true,
+                } : {
+                  title: `Remove the ${s.state} token for "${s.folder_name}"?`,
+                  message: "It already grants nothing; this only clears it from the list.",
+                  confirmLabel: "Remove",
+                }, () => unshareFolder(s.token))} />
+            </span>
           </div>
           <TokenLine s={s} />
         </div>

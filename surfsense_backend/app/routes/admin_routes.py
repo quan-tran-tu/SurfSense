@@ -116,6 +116,14 @@ class AdminFolderRead(BaseModel):
         from_attributes = True
 
 
+class AdminRootFolderRead(BaseModel):
+    id: int
+    name: str
+    owner_email: str | None = None
+    document_count: int = 0
+    group_ids: list[int] = []
+
+
 class AdminShareRead(BaseModel):
     id: int
     token: str
@@ -493,6 +501,49 @@ async def list_user_folders(
             created_at=f.created_at,
         )
         for f, space_name in rows
+    ]
+
+
+@router.get("/folders", response_model=list[AdminRootFolderRead])
+async def list_root_folders(
+    session: AsyncSession = Depends(get_async_session),
+    _: AuthContext = Depends(require_admin),
+):
+    """Every user's space-wide root folders, with the groups each is granted to.
+
+    These are the folders an admin can grant or share; session-scoped ones are
+    left out because the server refuses both until they are promoted. The
+    document count is shallow, as in ``list_group_folders``.
+    """
+    documents = (
+        select(func.count(Document.id))
+        .where(Document.folder_id == Folder.id)
+        .correlate_except(Document)
+        .scalar_subquery()
+    )
+    rows = (
+        await session.execute(
+            select(Folder.id, Folder.name, User.email, documents)
+            .join(SearchSpace, SearchSpace.id == Folder.search_space_id)
+            .outerjoin(User, User.id == SearchSpace.user_id)
+            .where(Folder.parent_id.is_(None), Folder.owner_thread_id.is_(None))
+            .order_by(Folder.name)
+        )
+    ).all()
+    groups: dict[int, list[int]] = {}
+    for folder_id, group_id in (
+        await session.execute(select(FolderGroupGrant.folder_id, FolderGroupGrant.group_id))
+    ).all():
+        groups.setdefault(folder_id, []).append(group_id)
+    return [
+        AdminRootFolderRead(
+            id=folder_id,
+            name=name,
+            owner_email=email,
+            document_count=count,
+            group_ids=groups.get(folder_id, []),
+        )
+        for folder_id, name, email, count in rows
     ]
 
 

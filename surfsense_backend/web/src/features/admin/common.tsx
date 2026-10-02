@@ -9,6 +9,7 @@ export const adminKeys = {
   groups: ["admin", "groups"] as const,
   groupMembers: (id: number) => ["admin", "group", id, "members"] as const,
   groupFolders: (id: number) => ["admin", "group", id, "folders"] as const,
+  folders: ["admin", "folders"] as const,
   shares: ["admin", "shares"] as const,
   links: ["admin", "links"] as const,
 };
