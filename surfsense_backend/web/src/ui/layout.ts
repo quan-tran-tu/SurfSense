@@ -9,10 +9,14 @@ const LS = "osint.layout";
 
 export const SIDEBAR_MIN = 220;
 export const SIDEBAR_MAX = 640;
-const SIDEBAR_DEFAULT = 300;
+// Wide enough for a share token on one line.
+export const SIDEBAR_DEFAULT = 380;
 
 interface Layout {
   sidebarWidth: number;
+  // Only a width the user dragged to is kept; otherwise the default applies,
+  // so raising the default reaches browsers that saved the old one.
+  widthSet?: boolean;
   sidebarHidden: boolean;
   collapsed: Record<string, boolean>;
 }
@@ -21,7 +25,8 @@ function read(): Layout {
   try {
     const v = JSON.parse(localStorage.getItem(LS) || "{}");
     return {
-      sidebarWidth: clampWidth(Number(v.sidebarWidth) || SIDEBAR_DEFAULT),
+      sidebarWidth: v.widthSet ? clampWidth(Number(v.sidebarWidth) || SIDEBAR_DEFAULT) : SIDEBAR_DEFAULT,
+      widthSet: v.widthSet === true,
       sidebarHidden: v.sidebarHidden === true,
       collapsed: v.collapsed && typeof v.collapsed === "object" ? v.collapsed : {},
     };
@@ -40,7 +45,7 @@ useLayout.subscribe((s) => {
 
 export const toggleSidebar = () => useLayout.setState((s) => ({ sidebarHidden: !s.sidebarHidden }));
 
-export const setSidebarWidth = (w: number) => useLayout.setState({ sidebarWidth: clampWidth(w) });
+export const setSidebarWidth = (w: number) => useLayout.setState({ sidebarWidth: clampWidth(w), widthSet: true });
 
 /** Whether a section is folded; `byDefault` holds until the user toggles it. */
 export const useCollapsed = (id: string, byDefault = false) =>

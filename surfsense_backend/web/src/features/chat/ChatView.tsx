@@ -157,7 +157,7 @@ function Composer() {
     const q = text.trim();
     if (busy) return;
     if (!q) {
-      toast("Gõ vào ô chat nội dung báo cáo cần viết, rồi bấm Report.", "warn");
+      toast("Type what the report should cover in the chat box, then press Report.", "warn");
       input.current?.focus();
       return;
     }
@@ -190,13 +190,13 @@ function Composer() {
             <span className="hint">Enter to send · Shift+Enter for a newline</span>
             <div className="menu">
               <button className="ghost" disabled={busy} onClick={() => report()}
-                title="Viết báo cáo Markdown từ kho tài liệu, theo nội dung trong ô chat (trong phạm vi folder đang chọn)">
+                title="Write a Markdown report from your documents on what the chat box says (inside the ticked folders, if any)">
                 📄 Report
               </button>
               {tplMenu && (
                 <div className="menu-list up" onMouseLeave={() => setTplMenu(false)}>
-                  <div className="menu-head">Định dạng theo mẫu</div>
-                  <button onClick={() => report(null)}>Không dùng mẫu</button>
+                  <div className="menu-head">Format like a template</div>
+                  <button onClick={() => report(null)}>No template</button>
                   {templates.map((t) => (
                     <button key={t.id} onClick={() => report(t)}>t{t.id} · {t.name}</button>
                   ))}

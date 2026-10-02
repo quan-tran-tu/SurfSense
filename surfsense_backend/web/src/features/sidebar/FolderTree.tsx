@@ -136,12 +136,10 @@ export function FolderRow({ f, depth, nodes }: { f: FolderNode; depth: number; n
     : <ScopePick ids={[f.id]} names={{ [f.id]: folderLabel(f) }}
         title="Tick to ask questions only inside this folder (and everything under it)." />;
 
-  // Whose session it belongs to, so two same-named rows are tellable apart.
-  const trail = actionable && scoped && (
+  // A dot before the name: filled for this session's, hollow for another's.
+  const mark = actionable && scoped && (
     <span className={`smark${mine ? " mine" : ""}`}
-      title={mine ? "Session-only: just this chat session sees it." : `Session-only: belongs to session #${f.owner_thread_id}.`}>
-      {mine ? "session" : `#${f.owner_thread_id}`}
-    </span>
+      title={mine ? "Session-only: just this chat session sees it." : `Session-only: belongs to session #${f.owner_thread_id}.`} />
   );
 
   // Promoted out of a session that still exists: ⤵ can put it back there.
@@ -186,7 +184,7 @@ export function FolderRow({ f, depth, nodes }: { f: FolderNode; depth: number; n
     <>
       <TreeRow nodeKey={`f:${f.id}`} depth={depth} name={f.name} count={f.document_count}
         nameTitle={f.origin !== "own" ? `${folderLabel(f)} — read-only` : undefined}
-        lead={lead} trail={trail} actions={actions}>
+        lead={<>{lead}{mark}</>} actions={actions}>
         {() => <FolderChildren f={f} depth={depth + 1} nodes={nodes} />}
       </TreeRow>
       {sharing && <ShareDialog folderId={f.id} path={f.name} onClose={() => setSharing(false)} />}

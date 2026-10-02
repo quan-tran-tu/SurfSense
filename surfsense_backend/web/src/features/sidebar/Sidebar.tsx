@@ -4,7 +4,7 @@ import { signOut } from "../../api/client";
 import type { FolderLink, FolderNode } from "../../api/types";
 import { keys } from "../../queryClient";
 import { setState, useStore } from "../../store";
-import { setSidebarWidth, toggleSection, useCollapsed, useLayout } from "../../ui/layout";
+import { SIDEBAR_DEFAULT, setSidebarWidth, toggleSection, useCollapsed, useLayout } from "../../ui/layout";
 import { confirmThen } from "../../ui/confirm";
 import { ICON } from "../../ui/icons";
 import { guard } from "../../ui/toast";
@@ -89,12 +89,15 @@ function SubFold({ id, title, count, byDefault = false, children }:
       <div className="subhead" onClick={() => toggleSection(id, byDefault)} title={collapsed ? "Show" : "Hide"}>
         <span className="caret">{collapsed ? "▸" : "▾"}</span>
         <span className="name">{title}</span>
-        <span className="count">{count}</span>
+        <span className="count" title={`${count} folder${count === 1 ? "" : "s"}`}>{count}</span>
       </div>
       {!collapsed && children}
     </div>
   );
 }
+
+/** Every sub-fold counts folders, so People and Groups read like My folders. */
+const folderCount = (m: Map<string, FolderNode[]>) => [...m.values()].reduce((n, roots) => n + roots.length, 0);
 
 /** Roots of a foreign origin, bucketed by the name they hang under. */
 function bucket(nodes: FolderNode[], origin: FolderNode["origin"], key: "group_name" | "owner_email") {
@@ -169,13 +172,13 @@ function Folders({ nodes, links }: { nodes: FolderNode[] | undefined; links: Fol
             {own.length ? ownRows : <div className="empty">none yet — + Add uploads one</div>}
           </SubFold>
           {groups.size > 0 && (
-            <SubFold id="folders:groups" title="Groups" count={groups.size}>
+            <SubFold id="folders:groups" title="Groups" count={folderCount(groups)}>
               {[...groups.keys()].sort().map((name) =>
                 <GroupingRow key={`g:${name}`} kind="group" name={name} roots={groups.get(name)!} nodes={nodes!} />)}
             </SubFold>
           )}
           {users.size > 0 && (
-            <SubFold id="folders:users" title="People" count={users.size} byDefault>
+            <SubFold id="folders:users" title="People" count={folderCount(users)} byDefault>
               {[...users.keys()].sort().map((email) =>
                 <GroupingRow key={`u:${email}`} kind="user" name={email} roots={users.get(email)!} nodes={nodes!} />)}
             </SubFold>
@@ -334,7 +337,7 @@ function Resizer() {
     window.addEventListener("pointerup", up);
     document.body.classList.add("resizing");
   };
-  return <div className="resizer" onPointerDown={start} onDoubleClick={() => setSidebarWidth(300)}
+  return <div className="resizer" onPointerDown={start} onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT)}
     title="Drag to resize · double-click to reset" />;
 }
 

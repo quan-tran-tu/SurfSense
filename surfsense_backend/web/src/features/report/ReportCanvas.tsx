@@ -33,7 +33,7 @@ const EXPORTS: { fmt: string; label: string }[] = [
   { fmt: "odt", label: "OpenDocument (.odt)" },
   { fmt: "html", label: "HTML" },
   { fmt: "md", label: "Markdown (.md)" },
-  { fmt: "plain", label: "Văn bản (.txt)" },
+  { fmt: "plain", label: "Plain text (.txt)" },
 ];
 
 const contentKey = (id: number) => ["reportContent", id] as const;
@@ -80,10 +80,10 @@ export function ReportCanvas({ id }: { id: number }) {
       const res = await apiJson<ReportContent>("PUT", `/api/v1/reports/${id}/content`, { json: { content: draft } });
       queryClient.setQueryData(contentKey(id), res);
       setDraft(null);
-      toast("Đã lưu báo cáo.");
+      toast("Report saved.");
       return true;
     } catch (e) {
-      toast(`Lưu thất bại: ${e instanceof Error ? e.message : e}`, "err", 10000);
+      toast(`Save failed: ${e instanceof Error ? e.message : e}`, "err", 10000);
       return false;
     } finally {
       setSaving(false);
@@ -103,9 +103,9 @@ export function ReportCanvas({ id }: { id: number }) {
   const switchVersion = async (to: number) => {
     if (to === id) return;
     if (dirty && !await confirmAction({
-      title: "Bỏ các thay đổi chưa lưu?",
-      message: "Bản này có thay đổi chưa lưu. Chuyển phiên bản sẽ bỏ các thay đổi đó.",
-      confirmLabel: "Bỏ và chuyển", danger: true,
+      title: "Discard unsaved changes?",
+      message: "This version has unsaved changes. Switching versions discards them.",
+      confirmLabel: "Discard and switch", danger: true,
     })) return;
     setDraft(null);
     location.hash = reportHref(to);
@@ -116,9 +116,9 @@ export function ReportCanvas({ id }: { id: number }) {
     // Export renders the server's copy, so it must hold what is on screen.
     if (dirty) {
       if (!await confirmAction({
-        title: "Lưu rồi export?",
-        message: "Export dùng bản đã lưu trên server. Lưu các thay đổi rồi export?",
-        confirmLabel: "Lưu và export",
+        title: "Save, then export?",
+        message: "Export uses the copy saved on the server. Save your changes and export?",
+        confirmLabel: "Save and export",
       })) return;
       if (!(await save())) return;
     }
@@ -131,12 +131,12 @@ export function ReportCanvas({ id }: { id: number }) {
     if (p) p.scrollTop = fraction * (p.scrollHeight - p.clientHeight);
   };
 
-  if (q.isPending) return <div className="canvas-msg">Đang tải báo cáo #{id}…</div>;
+  if (q.isPending) return <div className="canvas-msg">Loading report #{id}…</div>;
   if (q.isError) {
     return (
       <div className="canvas-msg">
-        Không mở được báo cáo #{id}: {q.error.message}
-        <div><a href="./">← Về chat</a></div>
+        Could not open report #{id}: {q.error.message}
+        <div><a href="./">← Back to chat</a></div>
       </div>
     );
   }
@@ -146,35 +146,35 @@ export function ReportCanvas({ id }: { id: number }) {
   const vIndex = versions.findIndex((v) => v.id === id);
 
   if (r.content_type !== "markdown") {
-    return <div className="canvas-msg">Báo cáo #{id} không phải Markdown ({r.content_type}), chưa sửa được ở đây.</div>;
+    return <div className="canvas-msg">Report #{id} is not Markdown ({r.content_type}), so it can't be edited here.</div>;
   }
 
   return (
     <div id="canvas">
       <header className="cbar">
-        <a className="back" href="./" title="Mở chat trong tab này">← Chat</a>
+        <a className="back" href="./" title="Open the chat in this tab">← Chat</a>
         <div className="ctitle">
           <strong>{r.title}</strong>
           <span className="sub"> · Report #{id}</span>
         </div>
         {versions.length > 1 && (
-          <select value={id} onChange={(e) => switchVersion(Number(e.target.value))} title="Phiên bản (bản gốc và các lần /revise)">
+          <select value={id} onChange={(e) => switchVersion(Number(e.target.value))} title="Version (the original and each /revise)">
             {versions.map((v, i) => (
               <option key={v.id} value={v.id}>
-                v{i + 1}{v.created_at ? ` · ${new Date(v.created_at).toLocaleString()}` : ""}{i === versions.length - 1 ? " (mới nhất)" : ""}
+                v{i + 1}{v.created_at ? ` · ${new Date(v.created_at).toLocaleString()}` : ""}{i === versions.length - 1 ? " (latest)" : ""}
               </option>
             ))}
           </select>
         )}
-        {versions.length > 1 && vIndex !== versions.length - 1 && <span className="badge off">bản cũ</span>}
+        {versions.length > 1 && vIndex !== versions.length - 1 && <span className="badge off">older version</span>}
         <span className="grow" />
-        {dirty && <span className="unsaved">● chưa lưu</span>}
+        {dirty && <span className="unsaved">● unsaved</span>}
         <div className="seg">
-          <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}>Sửa</button>
-          <button className={mode === "view" ? "on" : ""} onClick={() => setMode("view")}>Xem</button>
+          <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}>Edit</button>
+          <button className={mode === "view" ? "on" : ""} onClick={() => setMode("view")}>View</button>
         </div>
         <button className="primary" disabled={!dirty || saving} onClick={() => void save()} title="Ctrl+S">
-          {saving ? "Đang lưu…" : "Lưu"}
+          {saving ? "Saving…" : "Save"}
         </button>
         <div className="menu">
           <button onClick={() => setExportOpen(!exportOpen)}>Export ▾</button>
@@ -188,7 +188,7 @@ export function ReportCanvas({ id }: { id: number }) {
       <div className={`cbody ${mode}`}>
         {mode === "edit" && (
           <div className="cpane source">
-            <Suspense fallback={<div className="canvas-msg">Đang tải trình soạn thảo…</div>}>
+            <Suspense fallback={<div className="canvas-msg">Loading the editor…</div>}>
               <MarkdownEditor value={text} onChange={setDraft} onSave={() => void save()} onScroll={syncPreview} />
             </Suspense>
           </div>

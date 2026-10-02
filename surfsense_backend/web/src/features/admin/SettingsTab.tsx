@@ -48,12 +48,12 @@ export function SettingsTab() {
     title: "Save folder retention?",
     message: KINDS.map(({ key, label }) => `${label}: ${days(parsed[key])}`).join("\n") +
       (shorter.length
-        ? "\n\nShorter periods take effect at the next daily run (03:53): folders already older are deleted then, documents included."
+        ? "\n\nFolders already older than a shorter period are deleted within a day, documents included."
         : ""),
     confirmLabel: "Save", danger: shorter.length > 0,
   }, async () => {
     await adminApi("PUT", "/settings/retention", { json: parsed });
-    toast("Retention saved. The next daily run applies it.");
+    toast("Retention saved.");
     await refreshAdmin();
   });
 
@@ -71,9 +71,8 @@ export function SettingsTab() {
     <section className="apane">
       <h3 style={{ marginTop: 0 }}>Folder retention</h3>
       <div className="sub" style={{ marginBottom: 10 }}>
-        A daily run (03:53) deletes top-level folders — documents included — this many days after
-        they were uploaded. Empty or 0 keeps that kind forever. Promoting a folder doesn't restart
-        its clock.
+        Folders are deleted, with their documents, this many days after upload. Leave empty to
+        keep them forever.
       </div>
       <div className="card retention">
         {KINDS.map(({ key, label, help }) => (

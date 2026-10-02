@@ -94,10 +94,10 @@ export async function reportCommand(
 
   await whileBusy(async () => {
     addMessage("user", template !== undefined
-      ? `📄 Báo cáo${tpl ? ` (mẫu ${tpl.name})` : ""}: ${request}`
+      ? `📄 Report${tpl ? ` (template ${tpl.name})` : ""}: ${request}`
       : (parentId ? `/revise ${parentId} ` : `/report ${tpl ? `t${tpl.id} ` : ""}`) + request);
     const msgId = addMessage("assistant", "", true);
-    setStatus(msgId, parentId ? "Đang sửa lại báo cáo…" : "Đang tìm tư liệu và viết báo cáo…");
+    setStatus(msgId, parentId ? "Revising the report…" : "Searching the documents and writing the report…");
 
     try {
       const { spaceId, threadId, scopeFolderIds } = getState();
@@ -124,13 +124,13 @@ export async function reportCommand(
       setState({ lastReportId: res.report_id });
       setStatus(msgId, null);
       updateMessage(msgId, {
-        text: `Đã tạo báo cáo **“${res.title}”**${res.word_count ? ` (${res.word_count} từ)` : ""}.`,
+        text: `Created the report **“${res.title}”**${res.word_count ? ` (${res.word_count} words)` : ""}.`,
       });
       addSystemNote(
         `📄 Report #${res.report_id} — “${res.title}” is ready.\n` +
         `Download it:  /export ${res.report_id} pdf   (also: docx, html, latex, epub, odt, plain, md)\n` +
         `Revise it:    /revise ${res.report_id} <what to change>`,
-        [{ label: `Mở báo cáo #${res.report_id} để xem / sửa ↗`, href: reportHref(res.report_id) }]);
+        [{ label: `Open report #${res.report_id} to view / edit ↗`, href: reportHref(res.report_id) }]);
     } catch (e) {
       setStatus(msgId, `Report failed: ${e instanceof Error ? e.message : e}`, "warn");
     } finally {
@@ -216,5 +216,5 @@ export async function listReportsCommand() {
   const lines = rs.map((r) => `#${r.id} — ${r.title}${r.report_metadata?.status === "failed" ? "  (failed)" : ""}`);
   addSystemNote("Reports in this session:\n" + lines.join("\n") +
     "\n\nDownload: /export <id> <pdf|docx|html|latex|epub|odt|plain|md>",
-    rs.map((r) => ({ label: `Mở #${r.id} ↗`, href: reportHref(r.id) })));
+    rs.map((r) => ({ label: `Open #${r.id} ↗`, href: reportHref(r.id) })));
 }

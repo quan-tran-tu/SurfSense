@@ -46,21 +46,21 @@ export function ReportList() {
   return (
     <>
       <div className="seg small">
-        <button className={scope === "session" ? "on" : ""} onClick={() => setScope("session")}>Session này</button>
-        <button className={scope === "all" ? "on" : ""} onClick={() => setScope("all")}>Tất cả</button>
+        <button className={scope === "session" ? "on" : ""} onClick={() => setScope("session")}>This session</button>
+        <button className={scope === "all" ? "on" : ""} onClick={() => setScope("all")}>All</button>
       </div>
       {q.isPending && <div className="empty">loading…</div>}
       {q.data && !groups.length && (
-        <div className="empty">{scope === "session" ? "chưa có báo cáo trong session này" : "chưa có báo cáo"}</div>
+        <div className="empty">{scope === "session" ? "no reports in this session yet" : "no reports yet"}</div>
       )}
       {groups.map(({ latest: r, versions }) => {
         const failed = r.report_metadata?.status === "failed";
         return (
           <a key={r.id} className="item report" href={reportHref(r.id)} target="_blank" rel="noopener"
-            title={`#${r.id} · ${new Date(r.created_at).toLocaleString()} — mở trong tab mới`}>
+            title={`#${r.id} · ${new Date(r.created_at).toLocaleString()} — opens in a new tab`}>
             <span className="name">{r.title}</span>
             {versions > 1 && <span className="badge">v{versions}</span>}
-            {failed && <span className="badge dead">lỗi</span>}
+            {failed && <span className="badge dead">failed</span>}
           </a>
         );
       })}
