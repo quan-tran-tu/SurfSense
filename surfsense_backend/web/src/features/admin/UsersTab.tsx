@@ -93,7 +93,7 @@ function UserFolders({ user }: { user: AdminUser }) {
             <button className="sm" title="Make this folder space-wide: every session of theirs will see it." onClick={() =>
               confirmThen({
                 title: `Make "${f.name}" space-wide?`,
-                message: `All of ${user.email}'s sessions will see it — and so will every admin. ⤵ can scope it back. They are told in their activity log.`,
+                message: `All of ${user.email}'s sessions will see it — and so will every admin. ⤵ can scope it back.`,
                 confirmLabel: "Make space-wide",
               }, async () => {
                 await adminApi("PATCH", `/folders/${f.id}/scope`, { json: { scope: "space" } });
@@ -273,7 +273,7 @@ function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
           if (pw.length < 8) { toast("Passwords need at least 8 characters.", "warn"); return; }
           void confirmThen({
             title: `Reset ${u.email}'s password?`,
-            message: "Their old password stops working. They are told in their activity log, but not the new password — hand it to them yourself.",
+            message: "Their old password stops working. Hand the new password to them yourself.",
             confirmLabel: "Reset password", danger: true,
           }, async () => {
             await adminApi("POST", `/users/${u.id}/password`, { json: { password: pw } });

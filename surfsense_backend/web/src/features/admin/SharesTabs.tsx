@@ -58,7 +58,7 @@ function Expiry({ share }: { share: AdminShare }) {
   const [value, setValue] = useState(toLocalInput(share.expires_at));
   const save = (expiresAt: string | null) => confirmThen({
     title: expiresAt ? `Expire token #${share.id} on ${when(expiresAt)}?` : `Make token #${share.id} never expire?`,
-    message: "Its owner is told in their activity log.",
+    message: expiresAt ? "Importers keep reading it until then." : "It stays live until it is revoked.",
     confirmLabel: "Save",
   }, async () => {
     await adminApi("PATCH", `/folder-shares/${share.id}`, { json: { expires_at: expiresAt } });
@@ -99,7 +99,7 @@ function FolderDetail({ folder }: { folder: SharedFolder }) {
                 disabled={s.state === "revoked" && !s.link_count} onClick={() =>
                 confirmThen({
                   title: `Hard-revoke token #${s.id} of "${folder.name}"?`,
-                  message: `It is removed from all ${s.link_count} importer(s)' knowledge bases immediately, and can't be brought back. Importers and the owner are told in their activity log.`,
+                  message: `It is removed from all ${s.link_count} importer(s)' knowledge bases immediately, and can't be brought back.`,
                   confirmLabel: "Hard-revoke", danger: true,
                 }, async () => {
                   const r = await adminApi<{ links_removed?: number }>("DELETE", `/folder-shares/${s.id}`);

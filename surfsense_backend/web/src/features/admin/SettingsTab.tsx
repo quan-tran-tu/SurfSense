@@ -73,7 +73,7 @@ export function SettingsTab() {
       <div className="sub" style={{ marginBottom: 10 }}>
         A daily run (03:53) deletes top-level folders — documents included — this many days after
         they were uploaded. Empty or 0 keeps that kind forever. Promoting a folder doesn't restart
-        its clock. Owners are told in their activity log when a folder of theirs is deleted.
+        its clock.
       </div>
       <div className="card retention">
         {KINDS.map(({ key, label, help }) => (

@@ -9,7 +9,6 @@ import { confirmThen } from "../../ui/confirm";
 import { ICON } from "../../ui/icons";
 import { guard } from "../../ui/toast";
 import { addSystemNote } from "../chat/messages";
-import { EventsDialog, useEvents } from "../events";
 import { importFolder, listImports, listShares, loadTree, removeImport, unshareFolder, useIngest } from "../folders";
 import { clearScope, folderLabel, otherSession, pruneScope, setScope } from "../scope";
 import { createSession, deleteSession, listThreads, openThread } from "../session";
@@ -312,22 +311,6 @@ function Shares() {
   );
 }
 
-/** The footer's way into the account log, with how much of it is new. */
-function ActivityButton() {
-  const events = useEvents();
-  const [open, setOpen] = useState(false);
-  const unread = (events.data ?? []).filter((e) => !e.read).length;
-  return (
-    <>
-      <button className={`sm${unread ? " primary" : ""}`} onClick={() => setOpen(true)}
-        title={unread ? `${unread} new event(s) while you were away` : "What changed for your account and folders"}>
-        Activity{unread ? ` · ${unread}` : ""}
-      </button>
-      {open && <EventsDialog onClose={() => setOpen(false)} />}
-    </>
-  );
-}
-
 /* ----------------------------------------------------------------- resizer */
 
 /** Drag the sidebar's right edge to resize it; double-click resets it. */
@@ -388,7 +371,6 @@ export function Sidebar() {
       </div>
       <div className="side-foot">
         <span className="who-am-i" title={email}>{email}</span>
-        <ActivityButton />
         {isAdmin && (
           <button className="sm" onClick={() => {
             history.replaceState(null, "", "#admin");

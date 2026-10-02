@@ -144,16 +144,6 @@ export interface AdminLink {
   target_owner_email: string | null;
 }
 
-/** An account_event notification: something that changed for you while away. */
-export interface AccountEvent {
-  id: number;
-  title: string;
-  message: string;
-  read: boolean;
-  created_at: string;
-  metadata: { kind?: string };
-}
-
 /** Days per folder kind; null keeps that kind forever. */
 export interface RetentionDays {
   session: number | null;

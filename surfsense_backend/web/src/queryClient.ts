@@ -21,7 +21,6 @@ export const keys = {
   folderDocs: (spaceId: number | null, folderId: number) => ["folderDocs", spaceId, folderId] as const,
   imports: (spaceId: number | null) => ["imports", spaceId] as const,
   shares: (spaceId: number | null) => ["shares", spaceId] as const,
-  events: ["events"] as const,
   reports: (spaceId: number | null) => ["reports", spaceId] as const,
   admin: ["admin"] as const,
 };

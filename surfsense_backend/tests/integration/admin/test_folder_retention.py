@@ -12,11 +12,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
-from sqlalchemy import select
 
 from app.config import config
 from app.db import Folder, FolderGroupGrant, NewChatThread, SearchSpace, User, UserGroup
-from app.notifications.persistence import Notification
 from app.services.app_settings_service import (
     clear_retention_override,
     set_retention_override,
@@ -176,23 +174,3 @@ async def test_admin_settings_override_the_env(db_session, world, deleted, monke
     await clear_retention_override(db_session)
     await expire_folders(db_session, now=NOW)
     assert deleted == []
-
-
-@pytest.mark.asyncio
-async def test_owner_and_admins_are_told(db_session, world, deleted, monkeypatch):
-    _retention(monkeypatch, space=5)
-    old = await world("old-space", "user", 10)
-    users = world.users
-
-    await expire_folders(db_session, now=NOW)
-    rows = (
-        await db_session.execute(
-            select(Notification.user_id, Notification.notification_metadata).where(
-                Notification.type == "account_event"
-            )
-        )
-    ).all()
-    kinds = {(uid, meta["kind"]) for uid, meta in rows}
-    assert (users["user"].id, "folder_expired") in kinds
-    assert (users["admin"].id, "retention_run") in kinds
-    assert deleted == [old.id]

@@ -26,7 +26,6 @@ from app.schemas.folder_sharing import (
     FolderShareCreate,
     FolderShareRead,
 )
-from app.services.account_events import notify, space_owner_ids
 from app.services.folder_service import resolve_folder_path
 from app.services.folder_sharing_service import (
     generate_share_token,
@@ -174,33 +173,10 @@ async def revoke_folder_share(
         )
 
     if share.revoked_at is None:
-        was_live = share_state(share) == "live"
         share.revoked_at = datetime.now(UTC)
-        if was_live:
-            await _notify_importers(
-                session, share, f"{auth.user.email} revoked their share"
-            )
         await session.commit()
 
     return {"message": "Share revoked successfully"}
-
-
-async def _notify_importers(session: AsyncSession, share: SharedFolder, why: str) -> None:
-    """Tell everyone who imported ``share`` that it stopped answering."""
-    target_spaces = (
-        await session.execute(
-            select(FolderLink.target_search_space_id).where(FolderLink.share_id == share.id)
-        )
-    ).scalars()
-    folder = await session.get(Folder, share.source_folder_id)
-    name = folder.name if folder else share.name or "a folder"
-    notify(
-        session,
-        await space_owner_ids(session, target_spaces),
-        f'Imported folder "{name}" was revoked',
-        f'{why}, so "{name}" no longer answers your questions.',
-        "share_revoked",
-    )
 
 
 @router.get(
@@ -334,7 +310,6 @@ async def create_folder_link(
     # refresh — sync IO on an async session, which raises MissingGreenlet.
     folder_name = folder.name
     source_folder_id = share.source_folder_id
-    sharer_id = share.created_by_id
 
     link = FolderLink(
         share_id=share.id,
@@ -344,14 +319,6 @@ async def create_folder_link(
     )
     session.add(link)
     share.uses_count += 1
-    notify(
-        session,
-        [sharer_id],
-        f'"{folder_name}" was imported',
-        f'{auth.user.email} imported your shared folder "{folder_name}" and can now '
-        "read it.",
-        "share_imported",
-    )
 
     try:
         await session.commit()

@@ -417,10 +417,3 @@ a.item.report { color: var(--fg); text-decoration: none; }
 .retention { max-width: 760px; }
 .retention .arow input { width: 90px; flex: none; }
 .retention .arow .default { width: 150px; text-align: right; }
-
-/* ---- activity log ---- */
-.events { max-height: 55vh; overflow-y: auto; margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-.event { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
-.event.unread { border-left: 3px solid var(--accent); }
-.event .etitle { font-weight: 600; font-size: 13px; }
-.event .when { font-size: 11px; color: var(--muted); margin-top: 2px; }
