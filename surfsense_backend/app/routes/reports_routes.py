@@ -21,6 +21,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from urllib.parse import quote
 from uuid import UUID
@@ -35,6 +36,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.context import AuthContext
 from app.db import (
+    NewChatMessage,
+    NewChatMessageRole,
+    NewChatThread,
     Report,
     SearchSpace,
     SearchSpaceMembership,
@@ -258,6 +262,18 @@ async def _check_generate_access(
             )
 
 
+async def _check_thread(
+    request: ReportGenerateRequest, session: AsyncSession, auth: AuthContext
+) -> None:
+    """The thread a report is recorded in must be one the caller may write, in this space."""
+    from app.routes.new_chat_routes import check_thread_access
+
+    thread = await session.get(NewChatThread, request.thread_id)
+    if thread is None or thread.search_space_id != request.search_space_id:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    await check_thread_access(session, thread, auth.user)
+
+
 async def _generate_report(request: ReportGenerateRequest) -> ReportGenerateResponse:
     """Plan the report if needed, then write it. Access must already be checked.
 
@@ -351,6 +367,8 @@ _REPORT_JOB_TTL_SECONDS = 3600
 @dataclass
 class _ReportJob:
     user_id: UUID
+    # Set when the request and its outcome are recorded in this chat thread.
+    thread_id: int | None = None
     task: asyncio.Task | None = None
     result: ReportGenerateResponse | None = None
     finished_at: float | None = None
@@ -366,6 +384,37 @@ def _prune_report_jobs() -> None:
             del _report_jobs[job_id]
 
 
+async def _add_thread_message(
+    thread_id: int, role: NewChatMessageRole, text: str, author_id: UUID | None
+) -> None:
+    """Append one plain-text message to a chat thread, in the stored part format."""
+    async with shielded_async_session() as ws:
+        ws.add(
+            NewChatMessage(
+                thread_id=thread_id,
+                role=role,
+                content=[{"type": "text", "text": text}],
+                author_id=author_id,
+            )
+        )
+        thread = await ws.get(NewChatThread, thread_id)
+        if thread is not None:
+            thread.updated_at = datetime.now(UTC)
+        await ws.commit()
+
+
+def _report_reply(result: ReportGenerateResponse) -> str:
+    """The reply a finished report leaves in the thread: what was made, or why not."""
+    if result.status != "ready" or not result.report_id:
+        return f"Report failed: {result.error or 'unknown error'}"
+    words = f" ({result.word_count} words)" if result.word_count else ""
+    verb = "Revised" if result.is_revision else "Created"
+    return (
+        f"{verb} the report **“{result.title}”**{words}.\n\n"
+        f"[Open report #{result.report_id} ↗](#/report/{result.report_id})"
+    )
+
+
 async def _run_report_job(job: _ReportJob, request: ReportGenerateRequest) -> None:
     try:
         job.result = await _generate_report(request)
@@ -377,6 +426,16 @@ async def _run_report_job(job: _ReportJob, request: ReportGenerateRequest) -> No
             error=str(exc) or type(exc).__name__,
         )
     finally:
+        if job.thread_id is not None and job.result is not None:
+            try:
+                await _add_thread_message(
+                    job.thread_id,
+                    NewChatMessageRole.ASSISTANT,
+                    _report_reply(job.result),
+                    None,
+                )
+            except Exception:
+                logger.exception("Could not record the report outcome in its thread")
         job.finished_at = time.monotonic()
 
 
@@ -391,9 +450,15 @@ async def start_report_generation(
     Same inputs and outcome as ``/reports/generate``, but no request stays open
     for the run, so no proxy timeout can cut it off. Poll
     ``/reports/generate/jobs/{job_id}`` for the result.
+
+    With ``chat_text`` and ``thread_id``, the request and its outcome are saved
+    in that thread as a user message and a reply.
     """
+    record = bool(request.chat_text and request.chat_text.strip() and request.thread_id)
     try:
         await _check_generate_access(request, session, auth)
+        if record:
+            await _check_thread(request, session, auth)
     except SQLAlchemyError:
         raise HTTPException(
             status_code=500, detail="Database error occurred while generating report"
@@ -401,11 +466,36 @@ async def start_report_generation(
 
     _prune_report_jobs()
     job_id = uuid.uuid4().hex
-    job = _ReportJob(user_id=auth.user.id)
+    job = _ReportJob(
+        user_id=auth.user.id, thread_id=request.thread_id if record else None
+    )
+    if record:
+        # Recorded before the run starts, so a reload mid-run still shows it.
+        await _add_thread_message(
+            request.thread_id,
+            NewChatMessageRole.USER,
+            request.chat_text.strip(),
+            auth.user.id,
+        )
     # The registry holds the task, so it is not garbage-collected mid-run.
     job.task = asyncio.create_task(_run_report_job(job, request))
     _report_jobs[job_id] = job
     return ReportGenerateJob(job_id=job_id, status="running")
+
+
+@router.get("/reports/generate/jobs", response_model=list[ReportGenerateJob])
+async def list_running_report_generations(
+    thread_id: int,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """The caller's reports still being written in this thread, so a reloaded page can follow them."""
+    return [
+        ReportGenerateJob(job_id=job_id, status="running")
+        for job_id, job in _report_jobs.items()
+        if job.user_id == auth.user.id
+        and job.thread_id == thread_id
+        and job.result is None
+    ]
 
 
 @router.get("/reports/generate/jobs/{job_id}", response_model=ReportGenerateJob)

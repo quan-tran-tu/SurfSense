@@ -8,8 +8,7 @@ import { guard, toast } from "../../ui/toast";
 import { clearScope } from "../scope";
 import { SESSION_CONTEXT_MAX, setSessionContext } from "../sessionContext";
 import { ask } from "./ask";
-import { runCommand } from "./commands";
-import { reportCommand } from "./reports";
+import { writeReport } from "./reports";
 
 /**
  * The line under a message. While a reply is in flight it is a live indicator —
@@ -35,11 +34,6 @@ function Message({ m }: { m: ChatMessage }) {
     return (
       <div className="msg system">
         <div className="bubble sys">{m.text}</div>
-        {m.links && (
-          <div className="msglinks">
-            {m.links.map((l) => <a key={l.href} href={l.href} target="_blank" rel="noopener">{l.label}</a>)}
-          </div>
-        )}
       </div>
     );
   }
@@ -185,15 +179,14 @@ function Composer() {
     if (tpl === undefined && templates.length) { setTplMenu(true); return; }
     setTplMenu(false);
     setText("");
-    guard(() => reportCommand(q, null, tpl ?? null));
+    guard(() => writeReport(q, tpl ?? null));
   };
 
   const submit = () => {
     const q = text.trim();
     if (!q || busy) return;
     setText("");
-    // A leading slash is a command (/report, /export, …); everything else is a question.
-    guard(() => (q[0] === "/" ? runCommand(q) : ask(q)));
+    guard(() => ask(q));
   };
 
   return (

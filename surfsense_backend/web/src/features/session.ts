@@ -4,6 +4,7 @@ import { keys, queryClient, refreshFolders } from "../queryClient";
 import { getState, savePrefs, setState } from "../store";
 import { toast } from "../ui/toast";
 import { addMessage, clearMessages } from "./chat/messages";
+import { resumeReports } from "./chat/reports";
 import { reportIdFromHash } from "./report/route";
 
 /* ------------------------------------------------------------------ space */
@@ -133,7 +134,6 @@ export async function openThread(thread: Thread) {
   setState({
     threadId: thread.id,
     threadTitle: thread.title,
-    lastReportId: null,   // the /export|/revise default is per-thread
     source: null,
   });
   savePrefs();
@@ -252,6 +252,7 @@ export async function loadHistory() {
       if (answer.trim()) addMessage("assistant", answer);
     }
   }
+  await resumeReports();
 }
 
 /* -------------------------------------------------------------- bootstrap */

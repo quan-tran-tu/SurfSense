@@ -1,6 +1,6 @@
 /*
  * One report, full window: its Markdown source beside a live preview, its other
- * versions (the /revise chain) a pick away, save and export on the toolbar.
+ * versions a pick away, save and export on the toolbar.
  *
  * Saving overwrites the version on screen (PUT /reports/{id}/content). Export
  * renders what the server holds, so unsaved edits are saved first. Switching
@@ -44,7 +44,7 @@ export function ReportCanvas({ id }: { id: number }) {
   const q = useQuery({
     queryKey: contentKey(id),
     queryFn: () => apiJson<ReportContent>("GET", `/api/v1/reports/${id}/content`),
-    // Coming back from the chat tab after a /revise shows the new version.
+    // Coming back from the chat tab shows any newer version.
     refetchOnWindowFocus: true,
     staleTime: 0,
   });
@@ -158,7 +158,7 @@ export function ReportCanvas({ id }: { id: number }) {
           <span className="sub"> · Report #{id}</span>
         </div>
         {versions.length > 1 && (
-          <select value={id} onChange={(e) => switchVersion(Number(e.target.value))} title="Version (the original and each /revise)">
+          <select value={id} onChange={(e) => switchVersion(Number(e.target.value))} title="Version (the original and each revision)">
             {versions.map((v, i) => (
               <option key={v.id} value={v.id}>
                 v{i + 1}{v.created_at ? ` · ${new Date(v.created_at).toLocaleString()}` : ""}{i === versions.length - 1 ? " (latest)" : ""}

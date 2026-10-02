@@ -51,6 +51,15 @@ class ReportGenerateRequest(BaseModel):
             "them. Omit (or send an empty list) to search the whole space."
         ),
     )
+    chat_text: str | None = Field(
+        default=None,
+        max_length=20_000,
+        description=(
+            "With `thread_id`, on the background route only: saved as the "
+            "user's message in that thread, and the outcome as the reply, so "
+            "the exchange is part of the session's history like a question."
+        ),
+    )
     search_queries: list[str] | None = Field(
         default=None,
         max_length=5,

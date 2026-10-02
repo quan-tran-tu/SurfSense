@@ -6,11 +6,12 @@ these routes deliberately reach *across* the per-user search-space isolation
 boundary — that is the whole point of an admin — so they skip the usual
 ``check_permission`` / membership gates and rely solely on the superuser flag.
 
-The one capability normal sharing lacks is a *hard* revoke: a user's
-``DELETE /folder-shares/{token}`` only sets ``revoked_at`` (links remain but stop
-resolving). The admin's ``DELETE /admin/folder-shares/{id}`` also deletes every
-``FolderLink``, so the shared folder is genuinely removed from every importer's
-knowledge base, not merely silenced.
+A share's expiry is set once, by whoever mints it, and never edited; the admin's
+one lever on a share is revoke. A user's ``DELETE /folder-shares/{token}`` only
+sets ``revoked_at`` (links remain but stop resolving). The admin's
+``DELETE /admin/folder-shares/{id}`` also deletes every ``FolderLink``, so the
+shared folder is removed from every importer's knowledge base, not merely
+silenced.
 
 The other admin-only capability is *user groups*: a named set of users, plus
 folder grants against it. Granting a folder to a group hands every member
@@ -140,12 +141,6 @@ class AdminShareRead(BaseModel):
     link_count: int = 0
     created_at: datetime
     state: str = "live"  # live | revoked | expired — the last two are final
-
-
-class AdminShareUpdate(BaseModel):
-    # None clears the expiry: the share then lives until it is revoked. A date
-    # must be in the future; to end a share now, revoke it.
-    expires_at: datetime | None
 
 
 class RetentionDays(BaseModel):
@@ -975,54 +970,17 @@ async def list_folder_shares(
     ]
 
 
-@router.patch("/folder-shares/{share_id}")
-async def update_share_expiry(
-    share_id: int,
-    body: AdminShareUpdate,
-    session: AsyncSession = Depends(get_async_session),
-    auth: AuthContext = Depends(require_admin),
-):
-    """Move or clear a live share's expiry.
-
-    Revoked and expired are both final, so only a live share can be changed, and
-    only to a future date or to none: an ended share is never brought back, and
-    ending one now is what revoking is for.
-    """
-    share = await session.get(SharedFolder, share_id)
-    if not share:
-        raise HTTPException(status_code=404, detail="Share not found")
-    state = share_state(share)
-    if state != "live":
-        raise HTTPException(
-            status_code=409,
-            detail=f"This share is {state}; an ended share can't be changed. "
-            "Ask the owner for a new token.",
-        )
-    if body.expires_at is not None and body.expires_at <= datetime.now(UTC):
-        raise HTTPException(
-            status_code=422,
-            detail="The expiry must be in the future. To end the share now, revoke it.",
-        )
-    share.expires_at = body.expires_at
-    await session.commit()
-    logger.info(
-        f"Admin {auth.user.email} set share #{share_id} to expire at {body.expires_at or 'never'}"
-    )
-    return {"id": share.id, "expires_at": share.expires_at}
-
-
 @router.delete("/folder-shares/{share_id}")
-async def hard_revoke_share(
+async def revoke_share(
     share_id: int,
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(require_admin),
 ):
-    """Hard-revoke a share: mark it revoked AND delete every link to it.
+    """Revoke a share: mark it revoked AND delete every link to it.
 
-    This is the "truly revoke" the normal user route can't do — a plain revoke
-    only sets ``revoked_at`` and leaves the ``FolderLink`` rows in place (they
-    stop resolving but linger). Here the links are deleted, so the shared folder
-    is removed from every importer's knowledge base outright.
+    More than the owner's own revoke, which only sets ``revoked_at`` and leaves
+    the ``FolderLink`` rows in place (they stop resolving but linger). Here the
+    links are deleted, so the folder leaves every importer's Imported list.
     """
     share = await session.get(SharedFolder, share_id)
     if not share:
@@ -1040,8 +998,7 @@ async def hard_revoke_share(
     await session.commit()
 
     logger.info(
-        f"Admin {auth.user.email} hard-revoked share #{share_id} "
-        f"({removed} link(s) removed)"
+        f"Admin {auth.user.email} revoked share #{share_id} ({removed} link(s) removed)"
     )
     return {
         "message": "Share revoked and removed from all importers",

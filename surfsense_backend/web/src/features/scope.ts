@@ -10,7 +10,7 @@ import { toast } from "../ui/toast";
 
 export const ORIGIN_ORDER: Record<FolderNode["origin"], number> = { own: 0, linked: 1, group: 2, user: 3 };
 
-/** How a folder is named outside the tree — in the scope chip and in /scope. */
+/** How a folder is named outside the tree — in the scope chip. */
 export const folderLabel = (n: FolderNode) =>
   n.origin === "user" ? `${n.owner_email}/${n.name}`
   : n.origin === "group" ? `${n.group_name}/${n.name}`

@@ -74,7 +74,6 @@ aside h2 {
 .item:hover .acts, .item:focus-within .acts { display: flex; }
 .item .acts .act { opacity: 1; }
 .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 2px 8px; }
-.ro { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .7; }
 .item .dead { color: var(--warn); font-size: 11px; flex: none; }
 .item input[type=checkbox] { flex: none; margin: 0; }
 /* Checkboxes in the theme: a rounded box, filled with the accent when ticked,
@@ -157,9 +156,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
   .status.live .dots i, .cursor::after { animation: none; }
 }
 
-/* A client-side note (command output: report ready, /help, …). Not persisted;
-   it re-derives from the server on demand (/reports), so a reload dropping it
-   loses nothing. Dashed + muted to read as chrome, not as the model speaking. */
+/* A client-side note (a template's outline). Not persisted. Dashed + muted to
+   read as chrome, not as the model speaking. */
 .msg.system .bubble.sys {
   background: var(--panel); border: 1px dashed var(--line); color: var(--muted);
   border-radius: var(--radius); padding: 9px 13px; white-space: pre-wrap; font-size: 13px;
@@ -395,15 +393,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 .share { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 12px; }
 .share > header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .share .expiry { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
-.share .expiry input { width: auto; padding: 3px 6px; }
 .flow { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .flow .arrow { color: var(--muted); }
 .flow .end { overflow-wrap: anywhere; }
 .udetail.wide { width: 520px; }
 
 /* ---- links under a chat note ---- */
-.msglinks { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; font-size: 13px; }
-.msglinks a { color: var(--accent); }
 
 /* ---- report canvas (its own tab) ---- */
 #canvas { flex: 1; min-height: 0; display: flex; flex-direction: column; }

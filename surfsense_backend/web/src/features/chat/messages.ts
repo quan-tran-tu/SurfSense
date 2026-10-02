@@ -17,14 +17,9 @@ export const setStatus = (id: number, status: string | null, kind: StatusKind = 
   updateMessage(id, { status: status ?? "", statusKind: kind });
 
 /**
- * A client-side note in the message flow — command output like "report ready" or
- * /help. Not sent to the model and not persisted; /reports re-derives report state
- * from the server, so a reload dropping these notes loses nothing.
+ * A client-side note in the message flow, like a template's outline. Not sent to
+ * the model and not persisted, so a reload drops it.
  */
-export function addSystemNote(text: string, links?: ChatMessage["links"]) {
-  const id = addMessage("system", text);
-  if (links?.length) updateMessage(id, { links });
-  return id;
-}
+export const addSystemNote = (text: string) => addMessage("system", text);
 
 export const clearMessages = () => setState({ messages: [] });

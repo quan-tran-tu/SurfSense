@@ -12,7 +12,7 @@ interface ReportGroup {
 }
 
 /**
- * One row per report, not per version: /revise adds versions to a group, and the
+ * One row per report, not per version: a revision adds a version to a group, and the
  * row stands for the group, opening its newest version (the canvas switches
  * between the rest).
  */
@@ -31,7 +31,7 @@ function groupReports(reports: Report[]): ReportGroup[] {
 }
 
 /**
- * The reports written in this space, so opening one never needs /reports. The
+ * The reports written in this space, each a click from its canvas. The
  * list follows the open session by default; "all" shows every session's.
  */
 export function ReportList() {

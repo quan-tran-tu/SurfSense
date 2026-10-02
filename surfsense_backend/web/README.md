@@ -38,7 +38,7 @@ dials the model, not the browser.
 | `src/api/` | Fetch wrapper (cookie auth, one silent re-login) and wire types |
 | `src/features/session.ts` | Bootstrap: space, model connection, threads, history |
 | `src/features/folders.ts` | Folder tree reads, upload/ingest, share/import |
-| `src/features/chat/` | Streaming questions, slash commands, reports |
+| `src/features/chat/` | Streaming questions and reports |
 | `src/features/sidebar/` | Sessions, folder tree, templates, imports, shares |
 | `src/features/admin/` | The system-admin page |
 | `src/features/report/` | The report canvas, a tab of its own at `#/report/<id>`; CodeMirror is code-split into it |

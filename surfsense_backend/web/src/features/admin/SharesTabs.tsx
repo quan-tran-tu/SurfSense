@@ -5,12 +5,11 @@
  *
  * A folder can have several share tokens, and each token any number of
  * importers; every import is shown as source → target, so the admin can see
- * exactly who reads whose folder and cut one pair (remove the link), one token
- * (hard-revoke) or change how long a token lasts.
+ * exactly who reads whose folder and cut one pair (remove the link) or one
+ * token (revoke, which also removes every import of it).
  *
- * A token is live until revoked or expired, and both are final: the expiry of a
- * live token can be moved, never cleared, never set in the past and never on an
- * ended token. Ending one now is a revoke.
+ * A token's expiry is set once, by whoever made it; the admin can't change it.
+ * Revoked and expired are both final.
  */
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -102,36 +101,14 @@ function FolderGroups({ folder, groups }: { folder: FolderAccess; groups: AdminG
   );
 }
 
-/** "2026-10-07T09:30" in local time, what <input type="datetime-local"> speaks. */
-const toLocalInput = (iso: string | null) => {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-};
-
+/** When the token ends, or how it ended — set by its maker, never edited here. */
 function Expiry({ share }: { share: AdminShare }) {
-  const [value, setValue] = useState(toLocalInput(share.expires_at));
-  const save = (expiresAt: string) => confirmThen({
-    title: `Expire token #${share.id} on ${when(expiresAt)}?`,
-    message: "Importers keep reading it until then.",
-    confirmLabel: "Save",
-  }, async () => {
-    await adminApi("PATCH", `/folder-shares/${share.id}`, { json: { expires_at: expiresAt } });
-    toast(`Token now expires ${when(expiresAt)}.`);
-    await refreshAdmin();
-  });
-  // Ended is final: say how, and offer nothing that would pretend otherwise.
   if (share.state === "revoked") return <div className="expiry sub">Revoked {when(share.revoked_at)} — it can't be brought back.</div>;
   if (share.state === "expired") return <div className="expiry sub">Expired {when(share.expires_at)} — it can't be brought back.</div>;
-  const future = !!value && Date.parse(value) > Date.now();
   return (
     <div className="expiry">
       <span className="sub">Expires:</span>
       <strong>{share.expires_at ? when(share.expires_at) : "never"}</strong>
-      <input type="datetime-local" value={value} min={toLocalInput(new Date().toISOString())}
-        onChange={(e) => setValue(e.target.value)} />
-      <button className="sm" disabled={!future} title={value && !future ? "Pick a time in the future — to end it now, revoke it." : undefined}
-        onClick={() => save(new Date(value).toISOString())}>Set</button>
     </div>
   );
 }
@@ -154,19 +131,19 @@ function FolderDetail({ folder, groups }: { folder: FolderAccess; groups: AdminG
             <header>
               <span className="grow">Token #{s.id}<span className="sub"> · created {when(s.created_at)}</span></span>
               <Badge text={s.state} cls={STATUS_CLS[s.state]} />
-              <button className="sm danger" title="Hard-revoke: end the token and remove it from every importer"
+              <button className="sm danger" title="Revoke: end the token and remove it from every importer"
                 disabled={s.state === "revoked" && !s.link_count} onClick={() =>
                 confirmThen({
-                  title: `Hard-revoke token #${s.id} of "${folder.name}"?`,
+                  title: `Revoke token #${s.id} of "${folder.name}"?`,
                   message: `It is removed from all ${s.link_count} importer(s)' knowledge bases immediately, and can't be brought back.`,
-                  confirmLabel: "Hard-revoke", danger: true,
+                  confirmLabel: "Revoke", danger: true,
                 }, async () => {
                   const r = await adminApi<{ links_removed?: number }>("DELETE", `/folder-shares/${s.id}`);
                   toast(`Revoked — removed from ${r?.links_removed ?? 0} knowledge base(s).`);
                   await refreshAdmin();
                 })}>{ICON.remove}</button>
             </header>
-            <Expiry key={`${s.id}:${s.expires_at}`} share={s} />
+            <Expiry share={s} />
             <h4>Imported by</h4>
             {!links.length && <div className="empty">nobody</div>}
             {links.map((l) => (

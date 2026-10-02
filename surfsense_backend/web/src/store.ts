@@ -17,7 +17,6 @@ export interface ChatMessage {
   streaming?: boolean;
   status?: string;
   statusKind?: StatusKind;
-  links?: { label: string; href: string }[];   // shown under the bubble, open in a new tab
 }
 
 /** What the right-hand panel shows: a cited chunk in context, or a whole document. */
@@ -42,7 +41,6 @@ export interface State {
   spaceId: number | null;
   threadId: number | null;
   threadTitle: string;
-  lastReportId: number | null; // most recent report in this thread; the default for /export and /revise
   isAdmin: boolean;            // is_superuser — gates the Admin page (the server enforces it too)
   busy: boolean;
   adminOpen: boolean;
@@ -73,7 +71,7 @@ export const useStore = create<State>(() => ({
   model: DEFAULT_MODEL, modelBase: DEFAULT_MODEL_BASE,
   signedIn: false, boot: "ready", authNotice: "",
   spaceId: null, threadId: null, threadTitle: "",
-  lastReportId: null, isAdmin: false, busy: false, adminOpen: false,
+  isAdmin: false, busy: false, adminOpen: false,
   templates: [], scopeFolderIds: [], scopeNames: {}, sessionNotes: {},
   unreachableScopeIds: [], messages: [], source: null,
 }));

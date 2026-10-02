@@ -216,8 +216,7 @@ function Templates() {
             `Template t${t.id} — ${t.name}\n\n` +
             (t.outline.length
               ? `Sections:\n${t.outline.join("\n")}`
-              : "No headings detected — this template is used as a style exemplar only.") +
-            `\n\nUse it: /report t${t.id} <query>`)}>
+              : "No headings detected — this template is used as a style exemplar only."))}>
             <span className="name">t{t.id} · {t.name}</span>
             <span className="acts">
               <ActBtn label={ICON.remove} cls="danger" title="Remove this template" onClick={() =>
@@ -241,7 +240,7 @@ function Imports({ nodes, links }: { nodes: FolderNode[] | undefined; links: Fol
   const doImport = () => { const t = token.trim(); if (!t) return; setToken(""); guard(() => importFolder(t)); };
 
   return (
-    <Section id="imports" title={<>Imported <span className="ro">read-only</span></>}>
+    <Section id="imports" title="Imported">
       <div>
         {links && !links.length && <div className="empty">nothing imported</div>}
         {links?.map((link) => {

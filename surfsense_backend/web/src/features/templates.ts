@@ -1,6 +1,6 @@
 /*
- * Report templates are exemplar reports the user uploads; /report t<id> makes
- * the report follow their structure and style. They are per-user browser state
+ * Report templates are exemplar reports the user uploads; picking one under the
+ * Report button makes the report follow its structure and style. They are per-user browser state
  * (like session notes): the backend has no template storage, and the format reaches the
  * model inside the report instructions.
  *
@@ -82,7 +82,7 @@ export async function addTemplates(files: File[]) {
     const tpl: Template = { id, name: f.name.replace(TPL_NAME_EXT, ""), outline, content: text.slice(0, TPL_STORE_CHARS) };
     setPersisted({ templates: [...templates, tpl] });
     const shape = outline.length ? `${outline.length} sections` : "no headings detected — style only";
-    toast(`Template t${id} — "${f.name}" added (${shape}). Use it: /report t${id} <query>`, "ok", 9000);
+    toast(`Template t${id} — "${f.name}" added (${shape}). Pick it under 📄 Report.`, "ok", 9000);
   }
 }
 

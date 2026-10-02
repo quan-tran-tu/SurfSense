@@ -1,21 +1,22 @@
 /*
- * /report and /revise start /reports/generate/start and poll it; it runs the same report
- * pipeline the generate_report tool wraps — no agent turn, so every command works
- * on whatever model the space is pinned to. /export and /reports use the report
- * CRUD/export routes.
+ * The Report button starts /reports/generate/start and polls the job; it runs
+ * the same report pipeline the generate_report tool wraps — no agent turn, so
+ * it works on whatever model the space is pinned to.
+ *
+ * The server saves the request and its outcome in the thread, like a question
+ * and its answer, so a reload shows them — and a report still being written
+ * when the page loads is picked up and followed to the end.
  */
 import { api, ApiError, apiJson } from "../../api/client";
-import type { GenerateReportResult, Report, ReportJob, Template } from "../../api/types";
+import type { Report, ReportJob, Template } from "../../api/types";
 import { keys, queryClient } from "../../queryClient";
-import { getState, setState } from "../../store";
+import { getState } from "../../store";
 import { toast } from "../../ui/toast";
+import { loadHistory } from "../session";
 import { sessionContext } from "../sessionContext";
 import { TPL_PROMPT_CHARS } from "../templates";
 import { whileBusy } from "./ask";
-import { reportHref } from "../report/route";
-import { addMessage, addSystemNote, setStatus, updateMessage } from "./messages";
-
-export const EXPORT_FORMATS = ["pdf", "docx", "html", "latex", "epub", "odt", "plain", "md"];
+import { addMessage, setStatus, updateMessage } from "./messages";
 
 /**
  * The `user_instructions` argument — the only field of the generate call that
@@ -63,149 +64,113 @@ function reportStyleFor(request: string) {
 export const listReports = async () =>
   (await apiJson<Report[]>("GET", `/api/v1/reports?search_space_id=${getState().spaceId}&limit=500`)) ?? [];
 
-/** Every report belonging to the current thread, newest first. */
-export async function threadReports() {
-  const { threadId } = getState();
-  return (await listReports()).filter((r) => r.thread_id === threadId).sort((a, b) => b.id - a.id);
-}
-
 const POLL_MS = 3000;
 // Polls that fail in a row before giving up — enough to ride out a proxy hiccup
 // or a pod restart's first seconds, not a backend that is gone.
 const MAX_POLL_FAILURES = 10;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const WRITING = "Searching the documents and writing the report…";
+
+/** Jobs this page is polling, by id → thread. */
+const following = new Map<string, number | null>();
+
+/** The in-flight bubble for a report still being written. */
+function showWriting() {
+  const id = addMessage("assistant", "", true);
+  setStatus(id, WRITING);
+  return id;
+}
 
 /**
- * Start a report in the background and poll until it is written.
+ * Poll a report job until it is written, then reload the thread — the server
+ * has saved the reply there, so the chat shows exactly what a reload would.
  *
  * Writing takes minutes; held open as one request, the ingress's read timeout
  * cuts it off with a 504 while the server carries on and saves the report.
  * Short polls have no such limit.
  */
-async function generateReport(body: Record<string, unknown>): Promise<GenerateReportResult | null> {
-  const { job_id } = await apiJson<ReportJob>("POST", "/api/v1/reports/generate/start", { json: body });
+async function follow(jobId: string, threadId: number | null) {
+  following.set(jobId, threadId);
   let failures = 0;
-  for (;;) {
-    await sleep(POLL_MS);
-    try {
-      const job = await apiJson<ReportJob>("GET", `/api/v1/reports/generate/jobs/${job_id}`);
-      failures = 0;
-      if (job.status === "done") return job.result;
-    } catch (e) {
-      // Missing means the server restarted and lost the job; the session is gone
-      // too on a 401. Neither is worth retrying.
-      if (e instanceof ApiError && (e.status === 404 || e.status === 401)) {
-        throw new Error(e.status === 404
-          ? "the server restarted while writing it. /reports shows whether it was saved."
-          : e.message);
+  try {
+    for (;;) {
+      await sleep(POLL_MS);
+      try {
+        const job = await apiJson<ReportJob>("GET", `/api/v1/reports/generate/jobs/${jobId}`);
+        failures = 0;
+        if (job.status === "done") return;
+      } catch (e) {
+        // Missing means the server restarted and lost the job; the session is gone
+        // too on a 401. Neither is worth retrying.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 401)) {
+          toast(e.status === 404
+            ? "The server restarted while writing the report. The Reports list shows whether it was saved."
+            : e.message, "warn", 10000);
+          return;
+        }
+        if (++failures >= MAX_POLL_FAILURES) {
+          toast(`Lost track of the report: ${e instanceof Error ? e.message : e}`, "err", 10000);
+          return;
+        }
       }
-      if (++failures >= MAX_POLL_FAILURES) throw e;
     }
+  } finally {
+    following.delete(jobId);
+    // A failed run can still leave a row behind, so refresh either way.
+    void queryClient.invalidateQueries({ queryKey: keys.reports(getState().spaceId) });
+    if (getState().threadId === threadId) await loadHistory();
   }
 }
 
-/** Write (or, with parentId, revise) a report. Started, then polled; the bubble carries a status. */
 /**
- * `template` is the Report button's pick: given (even as null), the request is
- * taken literally. Left undefined, a leading "t<id>" — the /report form — names
- * the template.
+ * After the thread's history is shown: a report the server is still writing for
+ * it gets its in-flight bubble back, and is followed unless already.
  */
-export async function reportCommand(
-  request: string, parentId: number | null = null, template?: Template | null,
-) {
-  if (!request) { toast("Usage: /report [t<id>] <what the report should cover>", "warn"); return; }
-  if (getState().busy) return;
-
-  // "/report t2 <query>" formats the report after template t2. A revision keeps
-  // its parent's structure, so only /report takes one.
-  let tpl: Template | null = template ?? null;
-  const m = parentId || template !== undefined ? null : request.match(/^t(\d+)(?:\s+([\s\S]*))?$/i);
-  if (m) {
-    tpl = getState().templates.find((t) => t.id === Number(m[1])) ?? null;
-    if (!tpl) { toast(`No template t${m[1]}. /templates lists what you have.`, "warn"); return; }
-    request = (m[2] ?? "").trim();
-    if (!request) { toast(`Usage: /report t${tpl.id} <what the report should cover>`, "warn"); return; }
+export async function resumeReports() {
+  const { threadId } = getState();
+  if (threadId == null) return;
+  let jobs: ReportJob[] = [];
+  try {
+    jobs = (await apiJson<ReportJob[]>("GET", `/api/v1/reports/generate/jobs?thread_id=${threadId}`)) ?? [];
+  } catch { return; /* an older server without the listing: nothing to resume */ }
+  if (getState().threadId !== threadId) return;
+  for (const job of jobs) {
+    showWriting();
+    if (!following.has(job.job_id)) void follow(job.job_id, threadId);
   }
+}
 
+/** Write a report on `request`, formatted after `tpl` when one is given. */
+export async function writeReport(request: string, tpl: Template | null) {
+  if (!request || getState().busy) return;
   await whileBusy(async () => {
-    addMessage("user", template !== undefined
-      ? `📄 Report${tpl ? ` (template ${tpl.name})` : ""}: ${request}`
-      : (parentId ? `/revise ${parentId} ` : `/report ${tpl ? `t${tpl.id} ` : ""}`) + request);
-    const msgId = addMessage("assistant", "", true);
-    setStatus(msgId, parentId ? "Revising the report…" : "Searching the documents and writing the report…");
-
+    const chatText = `📄 Report${tpl ? ` (template ${tpl.name})` : ""}: ${request}`;
+    const { spaceId, threadId, scopeFolderIds } = getState();
+    addMessage("user", chatText);
+    const msgId = showWriting();
+    let jobId: string;
     try {
-      const { spaceId, threadId, scopeFolderIds } = getState();
-      const res = await generateReport({
-        search_space_id: spaceId,
-        thread_id: threadId,
-        request,
-        report_style: reportStyleFor(request),
-        user_instructions: buildReportInstructions(request, tpl),
-        parent_report_id: parentId,
-        // Same scope as a question. With it set the server refuses to write a
-        // report when those folders yield nothing.
-        folder_ids: scopeFolderIds.length ? scopeFolderIds : undefined,
-      });
-
-      if (!res || res.status !== "ready" || !res.report_id) {
-        setStatus(msgId, `Report failed: ${res?.error ?? "unknown error"}`, "warn");
-        if (res?.report_id) addSystemNote(`⚠ Report #${res.report_id} failed: ${res.error ?? "unknown error"}`);
-        return;
-      }
-
-      setState({ lastReportId: res.report_id });
-      setStatus(msgId, null);
-      updateMessage(msgId, {
-        text: `Created the report **“${res.title}”**${res.word_count ? ` (${res.word_count} words)` : ""}.`,
-      });
-      addSystemNote(
-        `📄 Report #${res.report_id} — “${res.title}” is ready.\n` +
-        `Download it:  /export ${res.report_id} pdf   (also: docx, html, latex, epub, odt, plain, md)\n` +
-        `Revise it:    /revise ${res.report_id} <what to change>`,
-        [{ label: `Open report #${res.report_id} to view / edit ↗`, href: reportHref(res.report_id) }]);
+      ({ job_id: jobId } = await apiJson<ReportJob>("POST", "/api/v1/reports/generate/start", {
+        json: {
+          search_space_id: spaceId,
+          thread_id: threadId,
+          request,
+          report_style: reportStyleFor(request),
+          user_instructions: buildReportInstructions(request, tpl),
+          // Same scope as a question. With it set the server refuses to write a
+          // report when those folders yield nothing.
+          folder_ids: scopeFolderIds.length ? scopeFolderIds : undefined,
+          // Saved in the thread with the outcome, so a reload keeps both.
+          chat_text: chatText,
+        },
+      }));
     } catch (e) {
       setStatus(msgId, `Report failed: ${e instanceof Error ? e.message : e}`, "warn");
-    } finally {
       updateMessage(msgId, { streaming: false });
-      // A failed run can still leave a row behind, so refresh either way.
-      void queryClient.invalidateQueries({ queryKey: keys.reports(getState().spaceId) });
+      return;
     }
+    await follow(jobId, threadId);
   });
-}
-
-export function reviseCommand(arg: string) {
-  const parts = arg.split(/\s+/).filter(Boolean);
-  let id = getState().lastReportId;
-  let instructions = arg;
-  if (parts.length && /^\d+$/.test(parts[0])) {
-    id = Number(parts[0]);
-    instructions = parts.slice(1).join(" ");
-  }
-  if (!id) { toast("No report to revise. Run /report first, or /revise <report_id> <changes>.", "warn"); return; }
-  if (!instructions.trim()) { toast("Usage: /revise [report_id] <what to change>", "warn"); return; }
-  return reportCommand(instructions, id);
-}
-
-export async function exportCommand(arg: string) {
-  const parts = arg.split(/\s+/).filter(Boolean);
-  let id: string | number | null, fmt: string;
-  if (parts.length >= 2) [id, fmt] = parts;
-  else if (parts.length === 1) {
-    if (/^\d+$/.test(parts[0])) { id = parts[0]; fmt = "pdf"; }   // "/export 12" → pdf
-    else { fmt = parts[0]; id = getState().lastReportId; }       // "/export docx" → last report
-  } else {
-    fmt = "pdf"; id = getState().lastReportId;
-  }
-
-  if (!id) { toast("No report to export. Run /report first, or /export <report_id> <format>.", "warn"); return; }
-  fmt = (fmt || "pdf").toLowerCase();
-  if (fmt === "markdown") fmt = "md";
-  if (!EXPORT_FORMATS.includes(fmt)) {
-    toast(`Unknown format "${fmt}". One of: ${EXPORT_FORMATS.join(", ")}.`, "warn");
-    return;
-  }
-  await downloadReport(Number(id), fmt);
 }
 
 const EXT_FOR: Record<string, string> = { latex: "tex", plain: "txt", md: "md" };
@@ -241,13 +206,4 @@ function triggerDownload(blob: Blob, filename: string) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-export async function listReportsCommand() {
-  const rs = await threadReports();
-  if (!rs.length) { addSystemNote("No reports in this session yet. Create one with /report <query>."); return; }
-  const lines = rs.map((r) => `#${r.id} — ${r.title}${r.report_metadata?.status === "failed" ? "  (failed)" : ""}`);
-  addSystemNote("Reports in this session:\n" + lines.join("\n") +
-    "\n\nDownload: /export <id> <pdf|docx|html|latex|epub|odt|plain|md>",
-    rs.map((r) => ({ label: `Open #${r.id} ↗`, href: reportHref(r.id) })));
 }
