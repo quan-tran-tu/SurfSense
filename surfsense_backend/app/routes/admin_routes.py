@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi_users.exceptions import InvalidPasswordException, UserAlreadyExists
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -45,12 +45,12 @@ from app.db import (
     FolderLink,
     SearchSpace,
     SharedFolder,
+    SharedFolderImport,
     User,
     UserGroup,
     UserGroupMembership,
     get_async_session,
 )
-from app.schemas.folders import FolderScopeUpdate
 from app.schemas.users import UserCreate
 from app.services.app_settings_service import (
     RETENTION_KINDS,
@@ -60,7 +60,10 @@ from app.services.app_settings_service import (
     set_retention_override,
 )
 from app.services.folder_service import dispatch_folder_deletion
-from app.services.folder_sharing_service import share_state
+from app.services.folder_sharing_service import (
+    record_imports_stopped,
+    share_state,
+)
 from app.users import UserManager, get_user_manager, require_admin
 
 logger = logging.getLogger(__name__)
@@ -212,6 +215,23 @@ class AdminLinkRead(BaseModel):
     target_owner_email: str | None = None
     created_by_id: str | None = None
     created_at: datetime
+
+
+class AdminShareImportRead(BaseModel):
+    """One importer of a share token, kept after their link is gone."""
+
+    id: int
+    share_id: int
+    user_email: str | None = None
+    first_imported_at: datetime
+    last_imported_at: datetime
+    import_count: int
+    # using | removed | removed_by_admin | revoked (by an admin) — or, while the
+    # link is still there, the ended share's state: revoked | expired.
+    status: str
+    stopped_at: datetime | None = None
+    # The current link, while there is one, so the admin can remove it.
+    link_id: int | None = None
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -545,31 +565,24 @@ async def list_root_folders(
 @router.patch("/folders/{folder_id}/scope")
 async def promote_folder_scope(
     folder_id: int,
-    body: FolderScopeUpdate | None = None,
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(require_admin),
 ):
-    """Promote any user's session-scoped folder to space-wide, or undo a promotion.
+    """Promote any user's session-scoped folder to space-wide.
 
     Same operation as the owner's ``PATCH /folders/{id}/scope``, bypassing
-    membership. No body means promote, as before the undo existed.
+    membership. Promote only: undoing a promotion is the owner's call, made from
+    their own sidebar.
     """
-    from app.services.folder_scope_service import (
-        demote_folder_to_session,
-        promote_folder_to_space,
-    )
+    from app.services.folder_scope_service import promote_folder_to_space
 
     folder = await session.get(Folder, folder_id)
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
     name = folder.name
 
-    if body is not None and body.scope == "session":
-        result = await demote_folder_to_session(session, folder)
-        done = f"Folder '{name}' is session-only again"
-    else:
-        result = await promote_folder_to_space(session, folder)
-        done = f"Folder '{name}' is now space-wide"
+    result = await promote_folder_to_space(session, folder)
+    done = f"Folder '{name}' is now space-wide"
     await session.commit()
     logger.info(f"Admin {auth.user.email}: {done} (#{folder_id})")
     return {"message": done, **result}
@@ -992,6 +1005,7 @@ async def revoke_share(
         )
     ).scalar_one()
 
+    await record_imports_stopped(session, share_id, "revoked")
     await session.execute(delete(FolderLink).where(FolderLink.share_id == share_id))
     if share.revoked_at is None:
         share.revoked_at = datetime.now(UTC)
@@ -1039,6 +1053,68 @@ async def list_folder_links(
     ]
 
 
+@router.get("/folder-share-imports", response_model=list[AdminShareImportRead])
+async def list_folder_share_imports(
+    session: AsyncSession = Depends(get_async_session),
+    _: AuthContext = Depends(require_admin),
+):
+    """Everyone who ever imported a share token, and whether they still read it.
+
+    ``status`` is ``using`` while the link stands and the share is live; the
+    ended share's state while the link stands on a revoked or expired share;
+    otherwise how the link was dropped.
+    """
+    importer = aliased(User)
+    space_owner = aliased(User)
+    now = datetime.now(UTC)
+    rows = (
+        await session.execute(
+            select(
+                SharedFolderImport,
+                SharedFolder,
+                FolderLink.id,
+                func.coalesce(importer.email, space_owner.email),
+            )
+            .join(SharedFolder, SharedFolder.id == SharedFolderImport.share_id)
+            .outerjoin(
+                FolderLink,
+                and_(
+                    FolderLink.share_id == SharedFolderImport.share_id,
+                    FolderLink.target_search_space_id
+                    == SharedFolderImport.target_search_space_id,
+                ),
+            )
+            .outerjoin(importer, importer.id == SharedFolderImport.user_id)
+            .outerjoin(
+                SearchSpace, SearchSpace.id == SharedFolderImport.target_search_space_id
+            )
+            .outerjoin(space_owner, space_owner.id == SearchSpace.user_id)
+            .order_by(SharedFolderImport.created_at)
+        )
+    ).all()
+    out = []
+    for imp, share, link_id, email in rows:
+        state = share_state(share, now)
+        if link_id is None:
+            status = imp.stop_reason or "removed"
+        else:
+            status = "using" if state == "live" else state
+        out.append(
+            AdminShareImportRead(
+                id=imp.id,
+                share_id=imp.share_id,
+                user_email=email,
+                first_imported_at=imp.created_at,
+                last_imported_at=imp.last_imported_at,
+                import_count=imp.import_count,
+                status=status,
+                stopped_at=imp.stopped_at,
+                link_id=link_id,
+            )
+        )
+    return out
+
+
 @router.delete("/folder-links/{link_id}")
 async def delete_folder_link(
     link_id: int,
@@ -1054,6 +1130,9 @@ async def delete_folder_link(
     if not link:
         raise HTTPException(status_code=404, detail="Imported folder not found")
 
+    await record_imports_stopped(
+        session, link.share_id, "removed_by_admin", link.target_search_space_id
+    )
     await session.delete(link)
     await session.commit()
     logger.info(f"Admin {auth.user.email} removed folder link #{link_id}")

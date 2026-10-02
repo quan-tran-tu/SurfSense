@@ -151,13 +151,19 @@ export interface AdminShare {
   state: ShareState;
 }
 
-export interface AdminLink {
+/** One importer of a share token — kept after their import is gone. */
+export interface AdminShareImport {
   id: number;
   share_id: number;
-  source_folder_id: number;
-  source_folder_name: string | null;
-  target_search_space_id: number;
-  target_owner_email: string | null;
+  user_email: string | null;
+  first_imported_at: string;
+  last_imported_at: string;
+  import_count: number;
+  /** using, or how it stopped: removed | removed_by_admin | revoked | expired. */
+  status: string;
+  stopped_at: string | null;
+  /** The current link while there is one. */
+  link_id: number | null;
 }
 
 /** Days per folder kind; null keeps that kind forever. */

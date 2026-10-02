@@ -28,7 +28,8 @@ import secrets
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import Select, and_, func, or_, select, union_all
+from sqlalchemy import Select, and_, func, or_, select, union_all, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -40,6 +41,7 @@ from app.db import (
     SearchSpace,
     SearchSpaceMembership,
     SharedFolder,
+    SharedFolderImport,
     User,
     UserGroup,
     UserGroupMembership,
@@ -81,6 +83,61 @@ def share_state(share: SharedFolder, now: datetime | None = None) -> ShareState:
     if share.expires_at is not None and share.expires_at <= (now or datetime.now(UTC)):
         return "expired"
     return "live"
+
+
+StopReason = Literal["removed", "removed_by_admin", "revoked"]
+
+
+async def record_import(
+    session: AsyncSession, share_id: int, target_search_space_id: int, user_id
+) -> None:
+    """Note an import in ``shared_folder_imports``: the first one, or one more.
+
+    Added to the caller's transaction, so it commits with the link it records.
+    """
+    now = datetime.now(UTC)
+    stmt = pg_insert(SharedFolderImport).values(
+        share_id=share_id,
+        target_search_space_id=target_search_space_id,
+        user_id=user_id,
+        created_at=now,
+        last_imported_at=now,
+        import_count=1,
+    )
+    await session.execute(
+        stmt.on_conflict_do_update(
+            constraint="uq_shared_folder_import_share_target",
+            set_={
+                "last_imported_at": now,
+                "import_count": SharedFolderImport.import_count + 1,
+                "user_id": user_id,
+                "stopped_at": None,
+                "stop_reason": None,
+            },
+        )
+    )
+
+
+async def record_imports_stopped(
+    session: AsyncSession,
+    share_id: int,
+    reason: StopReason,
+    target_search_space_id: int | None = None,
+) -> None:
+    """Note that a share's links into one space — or every space — were dropped."""
+    where = [
+        SharedFolderImport.share_id == share_id,
+        SharedFolderImport.stopped_at.is_(None),
+    ]
+    if target_search_space_id is not None:
+        where.append(
+            SharedFolderImport.target_search_space_id == target_search_space_id
+        )
+    await session.execute(
+        update(SharedFolderImport)
+        .where(*where)
+        .values(stopped_at=datetime.now(UTC), stop_reason=reason)
+    )
 
 
 def _in_spaces(column, search_space_id: int | Select | list[int]):

@@ -2267,6 +2267,50 @@ class FolderLink(BaseModel, TimestampMixin):
     source_folder = relationship("Folder")
 
 
+class SharedFolderImport(BaseModel, TimestampMixin):
+    """
+    Who has redeemed a share, kept after the link itself is gone — so an admin
+    sees everyone a token ever reached, not just its current importers. One row
+    per (share, importing space); ``created_at`` is the first import.
+
+    ``stopped_at`` / ``stop_reason`` say how the link was dropped (``removed``
+    by the importer, ``removed_by_admin``, or ``revoked`` by an admin, which
+    deletes every link). An ended share that left its links in place is read off
+    the share, not recorded here. Importing again clears both.
+    """
+
+    __tablename__ = "shared_folder_imports"
+    __table_args__ = (
+        UniqueConstraint(
+            "share_id",
+            "target_search_space_id",
+            name="uq_shared_folder_import_share_target",
+        ),
+    )
+
+    share_id = Column(
+        Integer,
+        ForeignKey("shared_folders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_search_space_id = Column(
+        Integer,
+        ForeignKey("searchspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_imported_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    import_count = Column(Integer, nullable=False, default=1, server_default=text("1"))
+    stopped_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    stop_reason = Column(String(32), nullable=True)
+
+
 class UserGroup(BaseModel, TimestampMixin):
     """A named set of users an admin can grant folders to, all at once.
 

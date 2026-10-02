@@ -93,25 +93,13 @@ function UserFolders({ user }: { user: AdminUser }) {
             <button className="sm" title="Make this folder space-wide: every session of theirs will see it." onClick={() =>
               confirmThen({
                 title: `Make "${f.name}" space-wide?`,
-                message: `All of ${user.email}'s sessions will see it — and so will every admin. ⤵ can scope it back.`,
+                message: `All of ${user.email}'s sessions will see it — and so will every admin.`,
                 confirmLabel: "Make space-wide",
               }, async () => {
                 await adminApi("PATCH", `/folders/${f.id}/scope`, { json: { scope: "space" } });
                 toast(`"${f.name}" is now space-wide.`);
                 await refreshAdmin();
               })}>{ICON.promote}</button>
-          )}
-          {depth === 0 && f.owner_thread_id == null && f.promoted_from_thread_id != null && (
-            <button className="sm" title={`Make it session-only again, in session #${f.promoted_from_thread_id} where it was uploaded.`} onClick={() =>
-              confirmThen({
-                title: `Scope "${f.name}" back to session #${f.promoted_from_thread_id}?`,
-                message: `Only that session of ${user.email}'s will see it; admins stop seeing it. Shares and group grants must be revoked first.`,
-                confirmLabel: "Make session-only",
-              }, async () => {
-                await adminApi("PATCH", `/folders/${f.id}/scope`, { json: { scope: "session" } });
-                toast(`"${f.name}" is session-only again.`);
-                await refreshAdmin();
-              })}>{ICON.demote}</button>
           )}
           {depth === 0 && (
             <button className="sm danger" title="Delete this folder and its documents" onClick={() =>

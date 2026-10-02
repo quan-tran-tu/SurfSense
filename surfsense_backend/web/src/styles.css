@@ -393,9 +393,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .share { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 12px; }
 .share > header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .share .expiry { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
-.flow { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.flow .arrow { color: var(--muted); }
-.flow .end { overflow-wrap: anywhere; }
+.dialog:has(.utable) { width: 640px; }
+.dialog .tablewrap { max-height: 50vh; overflow-y: auto; margin-top: 10px; }
+.utable.static tbody tr { cursor: default; }
+.utable.static td.who { overflow-wrap: anywhere; }
 .udetail.wide { width: 520px; }
 
 /* ---- links under a chat note ---- */

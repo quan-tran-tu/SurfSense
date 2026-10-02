@@ -29,6 +29,8 @@ from app.schemas.folder_sharing import (
 from app.services.folder_service import resolve_folder_path
 from app.services.folder_sharing_service import (
     generate_share_token,
+    record_import,
+    record_imports_stopped,
     share_is_live,
     share_state,
 )
@@ -250,6 +252,9 @@ async def delete_folder_link(
         "You don't have permission to remove imported folders from this search space",
     )
 
+    await record_imports_stopped(
+        session, link.share_id, "removed", link.target_search_space_id
+    )
     await session.delete(link)
     await session.commit()
     return {"message": "Imported folder removed"}
@@ -319,8 +324,12 @@ async def create_folder_link(
     )
     session.add(link)
     share.uses_count += 1
+    share_id = share.id
+    user_id = auth.user.id
 
     try:
+        await session.flush()
+        await record_import(session, share_id, search_space_id, user_id)
         await session.commit()
     except IntegrityError:
         # uq_folder_link_target_source: already linked. Idempotent, and must not

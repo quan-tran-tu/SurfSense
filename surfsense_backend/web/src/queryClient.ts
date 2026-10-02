@@ -32,7 +32,7 @@ export const keys = {
  * pauses while the tab is hidden and catches up the moment it is shown again.
  */
 const LIVE_MS = 5_000;
-for (const queryKey of [["tree"], ["imports"], ["shares"], ["admin", "folders"], ["admin", "shares"], ["admin", "links"]]) {
+for (const queryKey of [["tree"], ["imports"], ["shares"], ["admin", "folders"], ["admin", "shares"], ["admin", "imports"]]) {
   queryClient.setQueryDefaults(queryKey, { refetchInterval: LIVE_MS, refetchOnWindowFocus: true });
 }
 

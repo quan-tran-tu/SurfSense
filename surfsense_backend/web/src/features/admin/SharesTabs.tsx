@@ -4,17 +4,18 @@
  * so granting one to a group starts here — pick the folder, pick the group.
  *
  * A folder can have several share tokens, and each token any number of
- * importers; every import is shown as source → target, so the admin can see
- * exactly who reads whose folder and cut one pair (remove the link) or one
- * token (revoke, which also removes every import of it).
+ * importers. Everyone who ever imported a token stays on its Importers list,
+ * with whether they still read it; one import can be removed there. Revoking a
+ * token removes every import of it.
  *
  * A token's expiry is set once, by whoever made it; the admin can't change it.
  * Revoked and expired are both final.
  */
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { Dialog } from "../../ui/Dialog";
 import { adminApi } from "../../api/client";
-import type { AdminGroup, AdminLink, AdminRootFolder, AdminShare } from "../../api/types";
+import type { AdminGroup, AdminRootFolder, AdminShare, AdminShareImport } from "../../api/types";
 import { confirmThen } from "../../ui/confirm";
 import { ICON } from "../../ui/icons";
 import { guard, toast } from "../../ui/toast";
@@ -29,21 +30,21 @@ interface FolderAccess {
   /** Null when the folder can't be granted (a subfolder, or session-only now). */
   groupIds: number[] | null;
   shares: AdminShare[];
-  links: AdminLink[];
+  imports: AdminShareImport[];
 }
 
 const STATUS_CLS = { live: "admin", expired: "off", revoked: "dead" } as const;
 
 /**
  * Every grantable root, plus any other folder a token was minted on, each with
- * the shares and links that expose it.
+ * its shares and everyone who imported them.
  */
-function byFolder(roots: AdminRootFolder[], shares: AdminShare[], links: AdminLink[]): FolderAccess[] {
+function byFolder(roots: AdminRootFolder[], shares: AdminShare[], imports: AdminShareImport[]): FolderAccess[] {
   const folders = new Map<number, FolderAccess>();
   for (const r of roots) {
     folders.set(r.id, {
       id: r.id, name: r.name, owner: r.owner_email ?? "—", documents: r.document_count,
-      groupIds: r.group_ids, shares: [], links: [],
+      groupIds: r.group_ids, shares: [], imports: [],
     });
   }
   for (const s of shares) {
@@ -53,13 +54,14 @@ function byFolder(roots: AdminRootFolder[], shares: AdminShare[], links: AdminLi
         id: s.source_folder_id,
         name: s.source_folder_name ?? s.name ?? `folder #${s.source_folder_id}`,
         owner: s.created_by_email ?? "—",
-        documents: null, groupIds: null, shares: [], links: [],
+        documents: null, groupIds: null, shares: [], imports: [],
       };
       folders.set(f.id, f);
     }
     f.shares.push(s);
   }
-  for (const l of links) folders.get(l.source_folder_id)?.links.push(l);
+  const folderOf = new Map(shares.map((s) => [s.id, s.source_folder_id]));
+  for (const i of imports) folders.get(folderOf.get(i.share_id) ?? -1)?.imports.push(i);
   return [...folders.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -113,7 +115,61 @@ function Expiry({ share }: { share: AdminShare }) {
   );
 }
 
+const IMPORT_STATUS: Record<string, { label: string; cls: string }> = {
+  using: { label: "using", cls: "admin" },
+  removed: { label: "removed", cls: "off" },
+  removed_by_admin: { label: "removed by admin", cls: "off" },
+  revoked: { label: "token revoked", cls: "dead" },
+  expired: { label: "token expired", cls: "dead" },
+};
+const importStatus = (s: string) => IMPORT_STATUS[s] ?? { label: s, cls: "off" };
+
+/** Everyone who ever imported a token, using it or not. */
+function ImportersDialog({ share, folder, imports, onClose }:
+  { share: AdminShare; folder: FolderAccess; imports: AdminShareImport[]; onClose: () => void }) {
+  return (
+    <Dialog title={`Importers of token #${share.id}`} onClose={onClose}>
+      <p className="sub">"{folder.name}", owned by {folder.owner}.</p>
+      {!imports.length ? <div className="empty">nobody has imported it</div> : (
+        <div className="tablewrap">
+          <table className="utable static">
+            <thead><tr><th>User</th><th>Status</th><th>First imported</th><th>Stopped</th><th /></tr></thead>
+            <tbody>
+              {imports.map((i) => {
+                const st = importStatus(i.status);
+                const who = i.user_email ?? "deleted user";
+                return (
+                  <tr key={i.id}>
+                    <td className="who">{who}</td>
+                    <td><Badge text={st.label} cls={st.cls} /></td>
+                    <td className="sub">{when(i.first_imported_at)}</td>
+                    <td className="sub">{i.stopped_at ? when(i.stopped_at) : "—"}</td>
+                    <td>{i.link_id != null && (
+                      <button className="sm danger" title="Remove this import" onClick={() =>
+                        confirmThen({
+                          title: `Remove "${folder.name}" from ${who}'s knowledge base?`,
+                          message: "The owner's folder is untouched, and other importers keep it.",
+                          confirmLabel: "Remove", danger: true,
+                        }, async () => {
+                          await adminApi("DELETE", `/folder-links/${i.link_id}`);
+                          toast("Import removed.");
+                          await refreshAdmin();
+                        })}>{ICON.remove}</button>
+                    )}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="actions"><button className="sm" onClick={onClose}>Close</button></div>
+    </Dialog>
+  );
+}
+
 function FolderDetail({ folder, groups }: { folder: FolderAccess; groups: AdminGroup[] }) {
+  const [openShare, setOpenShare] = useState<number | null>(null);
   return (
     <aside className="udetail wide">
       <header>
@@ -125,14 +181,18 @@ function FolderDetail({ folder, groups }: { folder: FolderAccess; groups: AdminG
       <h4>Share tokens</h4>
       {!folder.shares.length && <div className="empty">none — the owner makes one with Share in their sidebar</div>}
       {folder.shares.map((s) => {
-        const links = folder.links.filter((l) => l.share_id === s.id);
+        const imports = folder.imports.filter((i) => i.share_id === s.id);
+        const using = imports.filter((i) => i.status === "using").length;
         return (
           <div key={s.id} className="share">
             <header>
               <span className="grow">Token #{s.id}<span className="sub"> · created {when(s.created_at)}</span></span>
               <Badge text={s.state} cls={STATUS_CLS[s.state]} />
-              <button className="sm danger" title="Revoke: end the token and remove it from every importer"
-                disabled={s.state === "revoked" && !s.link_count} onClick={() =>
+              <button className="sm" title="Everyone who imported this token" onClick={() => setOpenShare(s.id)}>
+                Importers{imports.length ? ` · ${using}/${imports.length}` : ""}
+              </button>
+              {s.state !== "revoked" && <button className="sm danger" title="Revoke: end the token and remove it from every importer"
+                onClick={() =>
                 confirmThen({
                   title: `Revoke token #${s.id} of "${folder.name}"?`,
                   message: `It is removed from all ${s.link_count} importer(s)' knowledge bases immediately, and can't be brought back.`,
@@ -141,30 +201,10 @@ function FolderDetail({ folder, groups }: { folder: FolderAccess; groups: AdminG
                   const r = await adminApi<{ links_removed?: number }>("DELETE", `/folder-shares/${s.id}`);
                   toast(`Revoked — removed from ${r?.links_removed ?? 0} knowledge base(s).`);
                   await refreshAdmin();
-                })}>{ICON.remove}</button>
+                })}>{ICON.remove}</button>}
             </header>
             <Expiry share={s} />
-            <h4>Imported by</h4>
-            {!links.length && <div className="empty">nobody</div>}
-            {links.map((l) => (
-              <div key={l.id} className="arow">
-                <div className="grow flow">
-                  <span className="end">{folder.owner} / {folder.name}</span>
-                  <span className="arrow">→</span>
-                  <span className="end"><strong>{l.target_owner_email ?? `space #${l.target_search_space_id}`}</strong></span>
-                </div>
-                <button className="sm danger" title="Remove this import" onClick={() =>
-                  confirmThen({
-                    title: `Remove "${folder.name}" from ${l.target_owner_email ?? "that user"}'s knowledge base?`,
-                    message: "The owner's folder is untouched, and other importers keep it.",
-                    confirmLabel: "Remove", danger: true,
-                  }, async () => {
-                    await adminApi("DELETE", `/folder-links/${l.id}`);
-                    toast("Import removed.");
-                    await refreshAdmin();
-                  })}>{ICON.remove}</button>
-              </div>
-            ))}
+            {openShare === s.id && <ImportersDialog share={s} folder={folder} imports={imports} onClose={() => setOpenShare(null)} />}
           </div>
         );
       })}
@@ -175,19 +215,19 @@ function FolderDetail({ folder, groups }: { folder: FolderAccess; groups: AdminG
 export function SharesTab() {
   const roots = useQuery({ queryKey: adminKeys.folders, queryFn: () => adminApi<AdminRootFolder[]>("GET", "/folders") });
   const shares = useQuery({ queryKey: adminKeys.shares, queryFn: () => adminApi<AdminShare[]>("GET", "/folder-shares") });
-  const links = useQuery({ queryKey: adminKeys.links, queryFn: () => adminApi<AdminLink[]>("GET", "/folder-links") });
+  const imports = useQuery({ queryKey: adminKeys.imports, queryFn: () => adminApi<AdminShareImport[]>("GET", "/folder-share-imports") });
   const groups = useAdminGroups();
   const [selected, setSelected] = useState<number | null>(null);
   const [filter, setFilter] = useState("");
   const groupList = groups.data ?? [];
   const groupName = new Map(groupList.map((g) => [g.id, g.name]));
-  const folders = byFolder(roots.data ?? [], shares.data ?? [], links.data ?? []);
+  const folders = byFolder(roots.data ?? [], shares.data ?? [], imports.data ?? []);
   const needle = filter.trim().toLowerCase();
   const shown = needle
     ? folders.filter((f) => f.name.toLowerCase().includes(needle) || f.owner.toLowerCase().includes(needle))
     : folders;
   const current = folders.find((f) => f.id === selected);
-  const loading = roots.isPending || shares.isPending || links.isPending;
+  const loading = roots.isPending || shares.isPending || imports.isPending;
 
   return (
     <section className="apane">
@@ -221,7 +261,7 @@ export function SharesTab() {
                       {f.shares.length || <span className="sub">—</span>}
                       {f.shares.length > 0 && !live && <> <Badge text="none live" cls="off" /></>}
                     </td>
-                    <td className="num">{f.links.length || <span className="sub">—</span>}</td>
+                    <td className="num" title="Importers reading it now">{f.imports.filter((i) => i.status === "using").length || <span className="sub">—</span>}</td>
                   </tr>
                 );
               })}

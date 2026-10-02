@@ -11,7 +11,7 @@ export const adminKeys = {
   groupFolders: (id: number) => ["admin", "group", id, "folders"] as const,
   folders: ["admin", "folders"] as const,
   shares: ["admin", "shares"] as const,
-  links: ["admin", "links"] as const,
+  imports: ["admin", "imports"] as const,
 };
 
 /** Everything on the admin page is refetched after any admin write. */
