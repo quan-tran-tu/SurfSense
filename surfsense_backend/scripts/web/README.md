@@ -154,7 +154,7 @@ Everything `ask.sh` does, minus the REPL:
 | `--session` / `/switch` | the **Session** list in the sidebar (✕ deletes one) |
 | `/add`, `/reextract` | **+ Add** (a folder picker; re-picking an indexed folder offers a rebuild) |
 | `/folders`, `/rm` | the **Folders** list |
-| `/share`, `/unshare` | **Share** on a folder row; tokens are listed under **Shared by you** with a **Revoke** button |
+| `/share`, `/unshare` | **Share** on a folder row; tokens are listed under **Shared by you** with a ✕ to revoke |
 | `/import` | paste a token under **Imported** |
 | `FORCE_SEARCH` | the **Force retrieval** checkbox |
 
@@ -177,8 +177,9 @@ every session.
 The **Folders** list badges every scoped folder (`this session` / `session #n`),
 and the **⤴** button promotes one to space-wide: the stamp is cleared on the
 whole subtree and every session sees it from the next question on. Nothing is
-copied or re-embedded by promotion, and there is no demotion — re-upload with
-**This session only** instead. Two sessions may each upload a folder with the same
+copied or re-embedded by promotion. **⤵** undoes it: a promoted folder goes back
+to the session it was uploaded in (refused while it is shared or granted to a
+group, and impossible once that session is deleted). Two sessions may each upload a folder with the same
 name; they are distinct folders with distinct documents. Sharing (`Share`) is
 only offered on space-wide folders — promote first, then share.
 
@@ -247,18 +248,29 @@ app enforces — that is the point of an admin — so grant it sparingly.
 
 The **Folder shares** tab lists every shared folder; picking one shows each of its
 tokens with its importers as *owner / folder → importer*. Remove one importer, or
-hard-revoke a whole token, and set, clear or bring forward a token's expiry.
+hard-revoke a whole token, and move or clear a live token's expiry. A token is
+live until it is revoked or its expiry passes; both are final — an expiry can't
+be set in the past or changed on an ended token. To end one now, revoke it.
+
+Every admin action that affects another user (role, activation, password,
+group membership, grants, folder promote/demote/delete, share changes) lands
+in that user's **Activity** log — the footer button, which shows how many are
+new. Importers and group members are told when a folder they read is revoked
+or deleted, sharers when their folder is imported. Every edit or delete in the
+client asks for confirmation in a dialog naming the action.
 
 An admin whose access is revoked loses the panel at once — on their next admin
 request, or within 30 seconds if they are just looking at it — and lands back in
 chat, with other users' folders gone from their tree.
 
-**Folder retention.** Set `SESSION_FOLDER_RETENTION_DAYS`,
-`ADMIN_FOLDER_RETENTION_DAYS` and `SPACE_FOLDER_RETENTION_DAYS` in the backend's
-environment and a daily beat task deletes root folders — documents included —
-that many days after upload: session-only uploads, space-wide folders an admin
-uploaded, and every other space-wide folder respectively. Unset keeps that kind
-forever, which is the default.
+**Folder retention.** A daily beat task (03:53) deletes root folders — documents
+included — a set number of days after upload, per kind: session-only uploads,
+folders granted to a user group, space-wide folders an admin uploaded, and every
+other space-wide folder. Admins set the periods on the panel's **Settings** tab;
+until they do (or after **Use deployment defaults**), `SESSION_`, `GROUP_`,
+`ADMIN_` and `SPACE_FOLDER_RETENTION_DAYS` in the backend's environment apply.
+Empty keeps that kind forever, which is the default. Owners get an Activity
+event when a folder of theirs is deleted, admins a summary of each run.
 
 ### User groups
 
@@ -342,12 +354,11 @@ called `hello` stays `hello` and keeps its history across sign-outs.
   counts stop moving (Celery keeps inserting rows after the upload returns).
 - Dotfiles, dot-directories and files over 500 MB are skipped, matching
   `ask.sh`'s `collect_files`.
-- **Share tokens are remembered locally.** The backend has no endpoint that lists
-  the shares you minted (only create / revoke / redeem), so this page keeps them
-  in `localStorage` to give you a one-click **Revoke**. Clearing site data loses
-  the list, not the shares — a token you have written down still revokes. Each
-  token is minted with an expiry (1 to 90 days, or never; 7 by default), after
-  which its imports stop answering.
+- **Share tokens are listed by the server** (`GET /search-spaces/{id}/folder-shares`),
+  so **Shared by you** is the same in every browser. **Share** on a folder that
+  already has a live token shows it instead of minting another. Each token is
+  minted with an expiry (1 to 90 days, or never; 7 by default), after which its
+  imports stop answering; expired tokens stay listed, marked, until removed.
 - Your preferences are kept in `localStorage`. A key injected by
   `serve.py --deepseek` is *not* — it lives only in the page that served it. A key
   typed into the login field is. Either way it also ends up server-side on the

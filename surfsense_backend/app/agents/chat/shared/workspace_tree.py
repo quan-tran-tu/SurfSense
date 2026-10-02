@@ -16,7 +16,7 @@ counting honest.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -49,6 +49,9 @@ class WorkspaceTree:
     folder_count: int
     document_count: int
     truncated: bool
+    # The picked folders' paths when the tree was cut down to them; empty for
+    # the whole workspace. ``folder_count`` then includes these roots.
+    scope_paths: tuple[str, ...] = ()
 
 
 def approx_tokens(text: str) -> int:
@@ -96,21 +99,47 @@ async def build_workspace_tree(
     llm: BaseChatModel | None = None,
     max_entries: int = MAX_TREE_ENTRIES,
     max_tokens: int = MAX_TREE_TOKENS,
+    folder_ids: tuple[int, ...] | list[int] | None = None,
 ) -> WorkspaceTree:
-    """Read the readable folders/documents for a space and render them."""
+    """Read the readable folders/documents for a space and render them.
+
+    ``folder_ids`` cuts the tree down to those folders' subtrees — the folders a
+    question was scoped to. Without it, "how many files are in this folder?"
+    would be answered from the whole workspace's listing.
+    """
     index = await build_path_index(session, search_space_id, thread_id=thread_id)
-    doc_rows = await session.execute(
-        select(Document.id, Document.title, Document.folder_id).where(
-            readable_documents_filter(index, search_space_id)
-        )
+    query = select(Document.id, Document.title, Document.folder_id).where(
+        readable_documents_filter(index, search_space_id)
     )
-    return format_workspace_tree(
+    scope_paths: tuple[str, ...] = ()
+    if folder_ids:
+        from app.services.folder_service import folder_subtree_ids_subquery
+
+        subtree = set(
+            (await session.execute(folder_subtree_ids_subquery(list(folder_ids))))
+            .scalars()
+            .all()
+        )
+        # Only folders this index can show: another session's are not in it.
+        index = replace(
+            index,
+            folder_paths={
+                fid: path for fid, path in index.folder_paths.items() if fid in subtree
+            },
+        )
+        scope_paths = tuple(
+            sorted(index.folder_paths[f] for f in folder_ids if f in index.folder_paths)
+        )
+        query = query.where(Document.folder_id.in_(list(index.folder_paths) or [-1]))
+    doc_rows = await session.execute(query)
+    tree = format_workspace_tree(
         index,
         list(doc_rows.all()),
         llm=llm,
         max_entries=max_entries,
         max_tokens=max_tokens,
     )
+    return replace(tree, scope_paths=scope_paths)
 
 
 def format_workspace_tree(

@@ -17,6 +17,8 @@ button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 button.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+button.danger.solid { background: var(--err); border-color: var(--err); color: #fff; }
+button.danger.solid:hover:not(:disabled) { color: #fff; filter: brightness(1.1); }
 button.sm { padding: 2px 8px; font-size: 12px; }
 input, select, textarea {
   font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
@@ -410,3 +412,15 @@ a.item.report { color: var(--fg); text-decoration: none; }
 /* ---- Report button's template menu (opens upward, above the composer) ---- */
 .menu-list.up { top: auto; bottom: calc(100% + 4px); min-width: 240px; }
 .menu-head { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 6px 10px 4px; }
+
+/* ---- admin settings ---- */
+.retention { max-width: 760px; }
+.retention .arow input { width: 90px; flex: none; }
+.retention .arow .default { width: 150px; text-align: right; }
+
+/* ---- activity log ---- */
+.events { max-height: 55vh; overflow-y: auto; margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.event { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+.event.unread { border-left: 3px solid var(--accent); }
+.event .etitle { font-weight: 600; font-size: 13px; }
+.event .when { font-size: 11px; color: var(--muted); margin-top: 2px; }

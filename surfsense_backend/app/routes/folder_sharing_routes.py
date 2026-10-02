@@ -3,13 +3,17 @@
 Sharing is a *live link*, not a copy: accepting a token inserts a ``FolderLink``
 and the importer's reads pass through to the sharer's rows. Nothing is duplicated,
 so revoking the share removes the importer's access on their next query.
+
+A share is live until it is revoked or its expiry passes; both are final (see
+``folder_sharing_service.share_is_live``). The sharer's tokens are listed by
+``GET /search-spaces/{id}/folder-shares``, so a client never has to remember
+them itself.
 """
 
 import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -22,8 +26,13 @@ from app.schemas.folder_sharing import (
     FolderShareCreate,
     FolderShareRead,
 )
+from app.services.account_events import notify, space_owner_ids
 from app.services.folder_service import resolve_folder_path
-from app.services.folder_sharing_service import generate_share_token
+from app.services.folder_sharing_service import (
+    generate_share_token,
+    share_is_live,
+    share_state,
+)
 from app.users import get_auth_context
 from app.utils.rbac import check_permission
 
@@ -32,7 +41,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _link_read(link: FolderLink, folder_name: str, live: bool = True) -> FolderLinkRead:
+def _link_read(link: FolderLink, folder_name: str, state: str = "live") -> FolderLinkRead:
     return FolderLinkRead(
         id=link.id,
         share_id=link.share_id,
@@ -41,7 +50,8 @@ def _link_read(link: FolderLink, folder_name: str, live: bool = True) -> FolderL
         created_by_id=link.created_by_id,
         created_at=link.created_at,
         folder_name=folder_name,
-        live=live,
+        live=state == "live",
+        state=state,
     )
 
 
@@ -92,6 +102,49 @@ async def create_folder_share(
     return share
 
 
+@router.get(
+    "/search-spaces/{search_space_id}/folder-shares",
+    response_model=list[FolderShareRead],
+)
+async def list_my_folder_shares(
+    search_space_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """The tokens the caller minted in this space and has not revoked, newest first.
+
+    Expired ones are included (``state="expired"``) so the sharer sees why an
+    importer lost access; revoking one removes it from this list.
+    """
+    await check_permission(
+        session,
+        auth,
+        search_space_id,
+        Permission.DOCUMENTS_READ.value,
+        "You don't have permission to read this search space",
+    )
+    rows = (
+        await session.execute(
+            select(SharedFolder, Folder.name)
+            .join(Folder, Folder.id == SharedFolder.source_folder_id)
+            .where(
+                SharedFolder.source_search_space_id == search_space_id,
+                SharedFolder.created_by_id == auth.user.id,
+                SharedFolder.revoked_at.is_(None),
+            )
+            .order_by(SharedFolder.id.desc())
+        )
+    ).all()
+    now = datetime.now(UTC)
+    out = []
+    for share, folder_name in rows:
+        read = FolderShareRead.model_validate(share)
+        read.folder_name = folder_name
+        read.state = share_state(share, now)
+        out.append(read)
+    return out
+
+
 @router.delete("/folder-shares/{token}")
 async def revoke_folder_share(
     token: str,
@@ -121,10 +174,33 @@ async def revoke_folder_share(
         )
 
     if share.revoked_at is None:
+        was_live = share_state(share) == "live"
         share.revoked_at = datetime.now(UTC)
+        if was_live:
+            await _notify_importers(
+                session, share, f"{auth.user.email} revoked their share"
+            )
         await session.commit()
 
     return {"message": "Share revoked successfully"}
+
+
+async def _notify_importers(session: AsyncSession, share: SharedFolder, why: str) -> None:
+    """Tell everyone who imported ``share`` that it stopped answering."""
+    target_spaces = (
+        await session.execute(
+            select(FolderLink.target_search_space_id).where(FolderLink.share_id == share.id)
+        )
+    ).scalars()
+    folder = await session.get(Folder, share.source_folder_id)
+    name = folder.name if folder else share.name or "a folder"
+    notify(
+        session,
+        await space_owner_ids(session, target_spaces),
+        f'Imported folder "{name}" was revoked',
+        f'{why}, so "{name}" no longer answers your questions.',
+        "share_revoked",
+    )
 
 
 @router.get(
@@ -166,12 +242,7 @@ async def list_folder_links(
 
     now = datetime.now(UTC)
     return [
-        _link_read(
-            link,
-            folder_name,
-            live=share.revoked_at is None
-            and (share.expires_at is None or share.expires_at > now),
-        )
+        _link_read(link, folder_name, share_state(share, now))
         for link, folder_name, share in rows
     ]
 
@@ -234,11 +305,7 @@ async def create_folder_link(
     result = await session.execute(
         select(SharedFolder).filter(
             SharedFolder.token == request.token,
-            SharedFolder.revoked_at.is_(None),
-            or_(
-                SharedFolder.expires_at.is_(None),
-                SharedFolder.expires_at > func.now(),
-            ),
+            share_is_live(),
         )
     )
     share = result.scalars().first()
@@ -267,6 +334,7 @@ async def create_folder_link(
     # refresh — sync IO on an async session, which raises MissingGreenlet.
     folder_name = folder.name
     source_folder_id = share.source_folder_id
+    sharer_id = share.created_by_id
 
     link = FolderLink(
         share_id=share.id,
@@ -276,6 +344,14 @@ async def create_folder_link(
     )
     session.add(link)
     share.uses_count += 1
+    notify(
+        session,
+        [sharer_id],
+        f'"{folder_name}" was imported',
+        f'{auth.user.email} imported your shared folder "{folder_name}" and can now '
+        "read it.",
+        "share_imported",
+    )
 
     try:
         await session.commit()

@@ -9,6 +9,8 @@ import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import { adminApi } from "../../api/client";
 import type { AdminFolder, AdminGroup, AdminGroupFolder, AdminGroupMember } from "../../api/types";
 import { useStore } from "../../store";
+import { confirmThen } from "../../ui/confirm";
+import { ICON } from "../../ui/icons";
 import { guard, toast } from "../../ui/toast";
 import { adminKeys, Badge, refreshAdmin, useAdminGroups, useAdminUsers } from "./common";
 
@@ -86,10 +88,16 @@ function GroupDetail({ groupId, name }: { groupId: number; name: string }) {
         <div key={m.user_id} className="arow">
           <div className="grow">{m.display_name ? `${m.display_name} <${m.email}>` : m.email}</div>
           {m.is_superuser && <Badge text="admin" cls="admin" />}
-          <button className="sm danger" onClick={() => guard(async () => {
-            await adminApi("DELETE", `/groups/${groupId}/members/${m.user_id}`);
-            await refreshAdmin();
-          })}>Remove</button>
+          <button className="sm danger" title={`Remove from ${name}`} onClick={() =>
+            confirmThen({
+              title: `Remove ${m.email} from ${name}?`,
+              message: "They lose the group's folders on their next question.",
+              confirmLabel: "Remove", danger: true,
+            }, async () => {
+              await adminApi("DELETE", `/groups/${groupId}/members/${m.user_id}`);
+              toast(`Removed ${m.email} from ${name}.`);
+              await refreshAdmin();
+            })}>{ICON.remove}</button>
         </div>
       ))}
       {/* Admins are never members: they already read every user's folders. */}
@@ -97,7 +105,8 @@ function GroupDetail({ groupId, name }: { groupId: number; name: string }) {
         options={(users.data ?? []).filter((u) => !u.is_superuser && !memberIds.has(u.id))
           .map((u) => ({ value: u.id, label: u.email }))}
         onPick={(userId) => guard(async () => {
-          await adminApi("POST", `/groups/${groupId}/members`, { json: { user_id: userId } });
+          const r = await adminApi<{ message?: string }>("POST", `/groups/${groupId}/members`, { json: { user_id: userId } });
+          toast(r?.message ?? "Added.");
           await refreshAdmin();
         })} />
 
@@ -110,11 +119,16 @@ function GroupDetail({ groupId, name }: { groupId: number; name: string }) {
         <div key={f.folder_id} className="arow">
           <div className="grow">{f.name}</div>
           <span className="sub">{f.owner_email ?? "—"} · {f.document_count} doc(s)</span>
-          <button className="sm danger" onClick={() => guard(async () => {
-            await adminApi("DELETE", `/groups/${groupId}/folders/${f.folder_id}`);
-            toast("Revoked — members lose it on their next question.");
-            await refreshAdmin();
-          })}>Revoke</button>
+          <button className="sm danger" title={`Revoke from ${name}`} onClick={() =>
+            confirmThen({
+              title: `Revoke "${f.name}" from ${name}?`,
+              message: "Members lose it on their next question. The folder and its documents are untouched.",
+              confirmLabel: "Revoke", danger: true,
+            }, async () => {
+              await adminApi("DELETE", `/groups/${groupId}/folders/${f.folder_id}`);
+              toast("Revoked — members lose it on their next question.");
+              await refreshAdmin();
+            })}>{ICON.remove}</button>
         </div>
       ))}
       <GrantPicker groupId={groupId} granted={new Set((folders.data ?? []).map((f) => f.folder_id))} />
@@ -130,13 +144,20 @@ function GroupRow({ g, selected, onSelect, onDeleted }:
   const [desc, setDesc] = useState(g.description ?? "");
   const stop = (e: ReactMouseEvent) => e.stopPropagation();
 
-  const save = () => guard(async () => {
+  const save = () => {
     if (!name.trim()) { toast("A group needs a name.", "warn"); return; }
-    // "" clears the description; the server stores it as none.
-    await adminApi("PATCH", `/groups/${g.id}`, { json: { name: name.trim(), description: desc.trim() } });
-    setEditing(false);
-    await refreshAdmin();
-  });
+    void confirmThen({
+      title: `Save changes to "${g.name}"?`,
+      message: name.trim() !== g.name ? `It is renamed to "${name.trim()}".` : "Its description changes.",
+      confirmLabel: "Save",
+    }, async () => {
+      // "" clears the description; the server stores it as none.
+      await adminApi("PATCH", `/groups/${g.id}`, { json: { name: name.trim(), description: desc.trim() } });
+      setEditing(false);
+      toast("Group saved.");
+      await refreshAdmin();
+    });
+  };
 
   if (editing) {
     return (
@@ -162,19 +183,19 @@ function GroupRow({ g, selected, onSelect, onDeleted }:
       <td className="num">{g.member_count}</td>
       <td className="num">{g.folder_count}</td>
       <td className="acts" onClick={stop}>
-        <button className="sm" onClick={() => { setName(g.name); setDesc(g.description ?? ""); setEditing(true); }}>Edit</button>
-        <button className="sm danger" onClick={() => {
-          if (confirm(`Delete the group "${g.name}"?
-
-Its ${g.member_count} member(s) lose access to its ${g.folder_count} granted folder(s) at once. No documents are deleted.`)) {
-            guard(async () => {
-              await adminApi("DELETE", `/groups/${g.id}`);
-              onDeleted();
-              toast("Group deleted.");
-              await refreshAdmin();
-            });
-          }
-        }}>Delete</button>
+        <button className="sm" title="Edit name and description"
+          onClick={() => { setName(g.name); setDesc(g.description ?? ""); setEditing(true); }}>{ICON.edit}</button>
+        <button className="sm danger" title="Delete this group" onClick={() =>
+          confirmThen({
+            title: `Delete the group "${g.name}"?`,
+            message: `Its ${g.member_count} member(s) lose access to its ${g.folder_count} granted folder(s) at once. No documents are deleted.`,
+            confirmLabel: "Delete", danger: true,
+          }, async () => {
+            await adminApi("DELETE", `/groups/${g.id}`);
+            onDeleted();
+            toast("Group deleted.");
+            await refreshAdmin();
+          })}>{ICON.remove}</button>
       </td>
     </tr>
   );

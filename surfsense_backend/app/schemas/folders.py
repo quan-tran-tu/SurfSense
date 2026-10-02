@@ -27,9 +27,13 @@ class FolderReorder(BaseModel):
 
 
 class FolderScopeUpdate(BaseModel):
-    """Target scope for a folder subtree; only promotion is supported."""
+    """Target scope for a folder subtree.
 
-    scope: Literal["space"]
+    "space" promotes a session folder; "session" undoes a promotion, back to the
+    session the folder was promoted from.
+    """
+
+    scope: Literal["space", "session"] = "space"
 
 
 class FolderRead(BaseModel):

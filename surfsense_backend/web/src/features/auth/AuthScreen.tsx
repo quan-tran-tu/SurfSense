@@ -34,7 +34,7 @@ export function AuthScreen() {
     if (!key) { setError("Enter the model API key."); return; }
 
     // Whoever signed in last may not be who is signing in now: take only this
-    // user's shares and session, never the previous account's.
+    // user's templates and session, never the previous account's.
     if (who !== getState().email) adoptUser(who);
     setState({ email: who, password, apiKey: key, authNotice: "" });
     savePrefs();

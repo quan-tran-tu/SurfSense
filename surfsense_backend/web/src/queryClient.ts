@@ -20,15 +20,18 @@ export const keys = {
   tree: (spaceId: number | null) => ["tree", spaceId] as const,
   folderDocs: (spaceId: number | null, folderId: number) => ["folderDocs", spaceId, folderId] as const,
   imports: (spaceId: number | null) => ["imports", spaceId] as const,
+  shares: (spaceId: number | null) => ["shares", spaceId] as const,
+  events: ["events"] as const,
   reports: (spaceId: number | null) => ["reports", spaceId] as const,
   admin: ["admin"] as const,
 };
 
-/** Everything the folder panels show: the tree, its files, and the imports. */
+/** Everything the folder panels show: the tree, its files, imports and shares. */
 export async function refreshFolders() {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["tree"] }),
     queryClient.invalidateQueries({ queryKey: ["folderDocs"] }),
     queryClient.invalidateQueries({ queryKey: ["imports"] }),
+    queryClient.invalidateQueries({ queryKey: ["shares"] }),
   ]);
 }

@@ -22,6 +22,10 @@ share token or a grant says so. See ``app.services.folder_sharing_service``.
 Admins are never group members: they already read every non-admin user's
 folders, and they are the ones who hand out grants. Adding one is refused, and
 promoting a member to admin drops their memberships.
+
+Every action that changes what another user can read or do leaves an event in
+that user's log (``app.services.account_events``), so they learn of it next time
+they open the app.
 """
 
 import logging
@@ -49,8 +53,22 @@ from app.db import (
     UserGroupMembership,
     get_async_session,
 )
+from app.schemas.folders import FolderScopeUpdate
 from app.schemas.users import UserCreate
+from app.services.account_events import (
+    group_member_ids,
+    notify,
+    space_owner_ids,
+)
+from app.services.app_settings_service import (
+    RETENTION_KINDS,
+    clear_retention_override,
+    env_retention_days,
+    get_retention_override,
+    set_retention_override,
+)
 from app.services.folder_service import dispatch_folder_deletion
+from app.services.folder_sharing_service import share_state
 from app.users import UserManager, get_user_manager, require_admin
 
 logger = logging.getLogger(__name__)
@@ -100,6 +118,7 @@ class AdminFolderRead(BaseModel):
     search_space_name: str | None = None
     created_by_id: str | None = None
     owner_thread_id: int | None = None
+    promoted_from_thread_id: int | None = None
     created_at: datetime
 
     class Config:
@@ -121,11 +140,27 @@ class AdminShareRead(BaseModel):
     revoked_at: datetime | None = None
     link_count: int = 0
     created_at: datetime
+    state: str = "live"  # live | revoked | expired — the last two are final
 
 
 class AdminShareUpdate(BaseModel):
-    # None clears the expiry: the share then lives until it is revoked.
+    # None clears the expiry: the share then lives until it is revoked. A date
+    # must be in the future; to end a share now, revoke it.
     expires_at: datetime | None
+
+
+class RetentionDays(BaseModel):
+    # Days per folder kind; None or 0 keeps that kind forever.
+    session: int | None = Field(default=None, ge=0)
+    group: int | None = Field(default=None, ge=0)
+    admin: int | None = Field(default=None, ge=0)
+    space: int | None = Field(default=None, ge=0)
+
+
+class RetentionSettings(BaseModel):
+    effective: RetentionDays
+    deployment: RetentionDays  # the env defaults
+    overridden: bool  # whether an admin's settings replace the env defaults
 
 
 class AdminGroupRead(BaseModel):
@@ -239,6 +274,10 @@ async def _read_user(session: AsyncSession, user: User) -> AdminUserRead:
     return _user_read(user, spaces, folders, documents)
 
 
+async def _folder_owner_ids(session: AsyncSession, folder: Folder) -> list:
+    return await space_owner_ids(session, [folder.search_space_id])
+
+
 async def _count_admins(session: AsyncSession) -> int:
     return (
         await session.execute(
@@ -348,6 +387,25 @@ async def update_user(
                 detail="Cannot remove the last active system admin",
             )
 
+    events: list[tuple[str, str, str]] = []
+    if body.is_active is True and not user.is_active:
+        events.append(("Your account was reactivated",
+                       f"{auth.user.email} reactivated your account.", "account_activated"))
+    if body.is_superuser is not None and body.is_superuser != user.is_superuser:
+        if body.is_superuser:
+            events.append(("You are now a system admin",
+                           f"{auth.user.email} made you a system admin. The Admin page "
+                           "is in the sidebar, and every user's folders are now "
+                           "readable from your chats.", "role_admin"))
+        else:
+            events.append(("Your admin role was removed",
+                           f"{auth.user.email} removed your system-admin role. Other "
+                           "users' folders are no longer in your tree.", "role_user"))
+    if body.display_name is not None and (body.display_name.strip() or None) != user.display_name:
+        events.append(("Your display name was changed",
+                       f"{auth.user.email} set your display name to "
+                       f"\"{body.display_name.strip() or user.email}\".", "display_name"))
+
     if body.is_active is not None:
         user.is_active = body.is_active
     if body.is_superuser is not None:
@@ -361,6 +419,9 @@ async def update_user(
         user.is_superuser = body.is_superuser
     if body.display_name is not None:
         user.display_name = body.display_name.strip() or None
+    if not is_self:
+        for title, message, kind in events:
+            notify(session, [user.id], title, message, kind)
     await session.commit()
     await session.refresh(user)
     return await _read_user(session, user)
@@ -393,6 +454,15 @@ async def reset_user_password(
 
     user.hashed_password = user_manager.password_helper.hash(body.password)
     email = user.email
+    if str(user.id) != str(auth.user.id):
+        notify(
+            session,
+            [user.id],
+            "Your password was reset",
+            f"{auth.user.email} set a new password for your account. Ask them for "
+            "it if you did not request this.",
+            "password_reset",
+        )
     await session.commit()
     logger.info(f"Admin {auth.user.email} reset the password of {email}")
     return {"message": f"Password updated for {email}"}
@@ -463,6 +533,7 @@ async def list_user_folders(
             search_space_name=space_name,
             created_by_id=str(f.created_by_id) if f.created_by_id else None,
             owner_thread_id=f.owner_thread_id,
+            promoted_from_thread_id=f.promoted_from_thread_id,
             created_at=f.created_at,
         )
         for f, space_name in rows
@@ -472,25 +543,46 @@ async def list_user_folders(
 @router.patch("/folders/{folder_id}/scope")
 async def promote_folder_scope(
     folder_id: int,
+    body: FolderScopeUpdate | None = None,
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(require_admin),
 ):
-    """Promote any user's session-scoped folder to space-wide, bypassing membership.
+    """Promote any user's session-scoped folder to space-wide, or undo a promotion.
 
-    Same operation as the owner's ``PATCH /folders/{id}/scope`` — clears the
-    session stamp on the subtree and rehashes the documents' identities.
+    Same operation as the owner's ``PATCH /folders/{id}/scope``, bypassing
+    membership. No body means promote, as before the undo existed.
     """
-    from app.services.folder_scope_service import promote_folder_to_space
+    from app.services.folder_scope_service import (
+        demote_folder_to_session,
+        promote_folder_to_space,
+    )
 
     folder = await session.get(Folder, folder_id)
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
+    name = folder.name
+    owners = await _folder_owner_ids(session, folder)
 
-    result = await promote_folder_to_space(session, folder)
-    logger.info(
-        f"Admin {auth.user.email} promoted folder #{folder_id} to space-wide"
-    )
-    return {"message": f"Folder '{folder.name}' is now space-wide", **result}
+    if body is not None and body.scope == "session":
+        result = await demote_folder_to_session(session, folder)
+        title, message = (
+            f'"{name}" is session-only again',
+            f'{auth.user.email} scoped your folder "{name}" back to the chat session '
+            "it was uploaded in. Your other sessions no longer see it.",
+        )
+        done = f"Folder '{name}' is session-only again"
+    else:
+        result = await promote_folder_to_space(session, folder)
+        title, message = (
+            f'"{name}" is now space-wide',
+            f'{auth.user.email} made your folder "{name}" space-wide: every one of '
+            "your chat sessions now sees it.",
+        )
+        done = f"Folder '{name}' is now space-wide"
+    notify(session, [o for o in owners if str(o) != str(auth.user.id)], title, message, "folder_scope")
+    await session.commit()
+    logger.info(f"Admin {auth.user.email}: {done} (#{folder_id})")
+    return {"message": done, **result}
 
 
 @router.delete("/folders/{folder_id}")
@@ -508,7 +600,17 @@ async def delete_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
 
+    name = folder.name
+    owners = await _folder_owner_ids(session, folder)
     queued = await dispatch_folder_deletion(session, folder_id)
+    notify(
+        session,
+        [o for o in owners if str(o) != str(auth.user.id)],
+        f'Folder "{name}" was deleted',
+        f'{auth.user.email} deleted your folder "{name}" and its documents.',
+        "folder_deleted",
+    )
+    await session.commit()
     logger.info(f"Admin {auth.user.email} deleted folder #{folder_id}")
     return {
         "message": "Folder deletion started",
@@ -632,6 +734,14 @@ async def delete_group(
     """
     group = await _get_group(session, group_id)
     name = group.name
+    notify(
+        session,
+        await group_member_ids(session, group_id),
+        f'The group "{name}" was deleted',
+        f"{auth.user.email} deleted the user group {name}. The folders it held are "
+        "no longer readable through it.",
+        "group_deleted",
+    )
     await session.delete(group)
     await session.commit()
     logger.info(f"Admin {auth.user.email} deleted group '{name}'")
@@ -693,6 +803,14 @@ async def add_group_member(
             group_id=group_id, user_id=user.id, added_by_id=auth.user.id
         )
     )
+    notify(
+        session,
+        [user.id],
+        f'You were added to the group "{group.name}"',
+        f"{auth.user.email} added you to the user group {group.name}. Its folders "
+        "are under Groups in your sidebar, read-only.",
+        "group_added",
+    )
     try:
         await session.commit()
     except IntegrityError:
@@ -710,7 +828,7 @@ async def remove_group_member(
     auth: AuthContext = Depends(require_admin),
 ):
     """Remove a user from a group; the group's folders leave their view at once."""
-    await _get_group(session, group_id)
+    group = await _get_group(session, group_id)
     removed = (
         await session.execute(
             delete(UserGroupMembership).where(
@@ -721,6 +839,14 @@ async def remove_group_member(
     ).rowcount
     if not removed:
         raise HTTPException(status_code=404, detail="User is not in this group")
+    notify(
+        session,
+        [user_id],
+        f'You were removed from the group "{group.name}"',
+        f"{auth.user.email} removed you from the user group {group.name}. Its "
+        "folders are no longer readable from your chats.",
+        "group_removed",
+    )
     await session.commit()
     logger.info(f"Admin {auth.user.email} removed {user_id} from group #{group_id}")
     return {"message": "Removed from group"}
@@ -804,6 +930,14 @@ async def grant_folder_to_group(
             group_id=group_id, folder_id=folder.id, granted_by_id=auth.user.id
         )
     )
+    notify(
+        session,
+        await group_member_ids(session, group_id),
+        f'New folder for "{group.name}": {folder.name}',
+        f'{auth.user.email} granted "{folder.name}" to your group {group.name}. '
+        "It is under Groups in your sidebar, read-only.",
+        "group_folder_granted",
+    )
     try:
         await session.commit()
     except IntegrityError:
@@ -827,6 +961,8 @@ async def revoke_folder_from_group(
     Nothing is deleted but the grant row: the folder and its documents stay where
     they are, owned by whoever owned them.
     """
+    group = await _get_group(session, group_id)
+    folder = await session.get(Folder, folder_id)
     removed = (
         await session.execute(
             delete(FolderGroupGrant).where(
@@ -837,6 +973,15 @@ async def revoke_folder_from_group(
     ).rowcount
     if not removed:
         raise HTTPException(status_code=404, detail="Grant not found")
+    name = folder.name if folder else f"folder #{folder_id}"
+    notify(
+        session,
+        await group_member_ids(session, group_id),
+        f'"{name}" was removed from "{group.name}"',
+        f'{auth.user.email} revoked "{name}" from your group {group.name}; it no '
+        "longer answers your questions.",
+        "group_folder_revoked",
+    )
     await session.commit()
     logger.info(
         f"Admin {auth.user.email} revoked folder #{folder_id} from group #{group_id}"
@@ -853,6 +998,7 @@ async def list_folder_shares(
     _: AuthContext = Depends(require_admin),
 ):
     """Every folder share ever minted, newest first, with its importer count."""
+    now = datetime.now(UTC)
     rows = (
         await session.execute(
             select(SharedFolder, User.email, Folder.name, func.count(FolderLink.id))
@@ -879,6 +1025,7 @@ async def list_folder_shares(
             revoked_at=s.revoked_at,
             link_count=link_count,
             created_at=s.created_at,
+            state=share_state(s, now),
         )
         for s, email, folder_name, link_count in rows
     ]
@@ -891,16 +1038,39 @@ async def update_share_expiry(
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(require_admin),
 ):
-    """Set or clear a share's expiry.
+    """Move or clear a live share's expiry.
 
-    Liveness is checked on every read, so this takes effect on the importers'
-    next query either way: a past date silences the share at once (links stay,
-    as with a user's revoke), a later one or none brings an expired share back.
+    Revoked and expired are both final, so only a live share can be changed, and
+    only to a future date or to none: an ended share is never brought back, and
+    ending one now is what revoking is for.
     """
     share = await session.get(SharedFolder, share_id)
     if not share:
         raise HTTPException(status_code=404, detail="Share not found")
+    state = share_state(share)
+    if state != "live":
+        raise HTTPException(
+            status_code=409,
+            detail=f"This share is {state}; an ended share can't be changed. "
+            "Ask the owner for a new token.",
+        )
+    if body.expires_at is not None and body.expires_at <= datetime.now(UTC):
+        raise HTTPException(
+            status_code=422,
+            detail="The expiry must be in the future. To end the share now, revoke it.",
+        )
     share.expires_at = body.expires_at
+    folder = await session.get(Folder, share.source_folder_id)
+    name = folder.name if folder else share.name or "your folder"
+    if share.created_by_id != auth.user.id:
+        notify(
+            session,
+            [share.created_by_id],
+            f'Share of "{name}" changed',
+            f'{auth.user.email} set your share token for "{name}" to '
+            + (f"expire {body.expires_at:%Y-%m-%d %H:%M} UTC." if body.expires_at else "never expire."),
+            "share_expiry",
+        )
     await session.commit()
     logger.info(
         f"Admin {auth.user.email} set share #{share_id} to expire at {body.expires_at or 'never'}"
@@ -930,6 +1100,31 @@ async def hard_revoke_share(
             select(func.count(FolderLink.id)).filter(FolderLink.share_id == share_id)
         )
     ).scalar_one()
+
+    target_spaces = (
+        await session.execute(
+            select(FolderLink.target_search_space_id).where(FolderLink.share_id == share_id)
+        )
+    ).scalars().all()
+    folder = await session.get(Folder, share.source_folder_id)
+    name = folder.name if folder else share.name or "a folder"
+    notify(
+        session,
+        await space_owner_ids(session, target_spaces),
+        f'Imported folder "{name}" was removed',
+        f'{auth.user.email} revoked the share of "{name}" and removed it from your '
+        "imports.",
+        "share_revoked",
+    )
+    if share.created_by_id != auth.user.id:
+        notify(
+            session,
+            [share.created_by_id],
+            f'Your share of "{name}" was revoked',
+            f'{auth.user.email} revoked your share token for "{name}" and removed it '
+            f"from {removed} importer(s).",
+            "share_revoked",
+        )
 
     await session.execute(delete(FolderLink).where(FolderLink.share_id == share_id))
     if share.revoked_at is None:
@@ -994,7 +1189,66 @@ async def delete_folder_link(
     if not link:
         raise HTTPException(status_code=404, detail="Imported folder not found")
 
+    folder = await session.get(Folder, link.source_folder_id)
+    name = folder.name if folder else "a folder"
+    notify(
+        session,
+        await space_owner_ids(session, [link.target_search_space_id]),
+        f'Imported folder "{name}" was removed',
+        f'{auth.user.email} removed "{name}" from your imports.',
+        "import_removed",
+    )
     await session.delete(link)
     await session.commit()
     logger.info(f"Admin {auth.user.email} removed folder link #{link_id}")
     return {"message": "Imported folder removed"}
+
+
+# ── Settings ────────────────────────────────────────────────────────────────
+
+
+async def _retention_settings(session: AsyncSession) -> RetentionSettings:
+    override = await get_retention_override(session)
+    deployment = env_retention_days()
+    return RetentionSettings(
+        effective=RetentionDays(**(override or deployment)),
+        deployment=RetentionDays(**deployment),
+        overridden=override is not None,
+    )
+
+
+@router.get("/settings/retention", response_model=RetentionSettings)
+async def get_retention_settings(
+    session: AsyncSession = Depends(get_async_session),
+    _: AuthContext = Depends(require_admin),
+):
+    """How long each kind of folder is kept, and whether that is the env default."""
+    return await _retention_settings(session)
+
+
+@router.put("/settings/retention", response_model=RetentionSettings)
+async def put_retention_settings(
+    body: RetentionDays,
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Replace the env defaults with these periods (None or 0 = keep forever).
+
+    The daily retention run (03:53) applies them; nothing is deleted on save.
+    """
+    await set_retention_override(
+        session, {k: getattr(body, k) for k in RETENTION_KINDS}, auth.user.id
+    )
+    logger.info(f"Admin {auth.user.email} set folder retention to {body.model_dump()}")
+    return await _retention_settings(session)
+
+
+@router.delete("/settings/retention", response_model=RetentionSettings)
+async def reset_retention_settings(
+    session: AsyncSession = Depends(get_async_session),
+    auth: AuthContext = Depends(require_admin),
+):
+    """Drop the admin's periods; the deployment's env defaults apply again."""
+    await clear_retention_override(session)
+    logger.info(f"Admin {auth.user.email} reset folder retention to the deployment defaults")
+    return await _retention_settings(session)

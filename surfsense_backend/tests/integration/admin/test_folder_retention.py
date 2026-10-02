@@ -1,8 +1,9 @@
 """Folders past their retention period are deleted — each kind on its own clock.
 
-session: scoped to one chat session; admin: space-wide, uploaded by an admin;
-space: every other space-wide folder. Only root folders count, the clock is the
-upload time, and an unset period keeps that kind forever.
+session: scoped to one chat session; group: granted to a user group; admin:
+space-wide, uploaded by an admin; space: every other space-wide folder. Only
+root folders count, the clock is the upload time, and an unset period keeps that
+kind forever. An admin's settings (app_settings) replace the env defaults.
 """
 
 import uuid
@@ -11,8 +12,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
+from sqlalchemy import select
+
 from app.config import config
-from app.db import Folder, NewChatThread, SearchSpace, User
+from app.db import Folder, FolderGroupGrant, NewChatThread, SearchSpace, User, UserGroup
+from app.notifications.persistence import Notification
+from app.services.app_settings_service import (
+    clear_retention_override,
+    set_retention_override,
+)
 from app.tasks.celery_tasks import folder_retention_task
 from app.tasks.celery_tasks.folder_retention_task import expire_folders, folder_kind
 
@@ -31,8 +39,9 @@ def deleted(monkeypatch):
     return queued
 
 
-def _retention(monkeypatch, session=None, admin=None, space=None):
+def _retention(monkeypatch, session=None, admin=None, space=None, group=None):
     monkeypatch.setattr(config, "SESSION_FOLDER_RETENTION_DAYS", session)
+    monkeypatch.setattr(config, "GROUP_FOLDER_RETENTION_DAYS", group)
     monkeypatch.setattr(config, "ADMIN_FOLDER_RETENTION_DAYS", admin)
     monkeypatch.setattr(config, "SPACE_FOLDER_RETENTION_DAYS", space)
 
@@ -77,12 +86,15 @@ async def world(db_session):
         await db_session.flush()
         return f
 
+    folder.users = users
     return folder
 
 
 def test_kinds():
     assert folder_kind(12, False) == "session"
     assert folder_kind(12, True) == "session"
+    assert folder_kind(12, False, True) == "session"
+    assert folder_kind(None, True, True) == "group"
     assert folder_kind(None, True) == "admin"
     assert folder_kind(None, False) == "space"
 
@@ -131,3 +143,56 @@ async def test_nothing_configured_touches_nothing(db_session, world, deleted, mo
 
     assert await expire_folders(db_session, now=NOW) == 0
     assert deleted == []
+
+
+@pytest.mark.asyncio
+async def test_group_granted_folder_uses_the_group_period(
+    db_session, world, deleted, monkeypatch
+):
+    _retention(monkeypatch, admin=100, group=5)
+    granted = await world("granted", "admin", 10)
+    kept = await world("not-granted", "admin", 10)
+    group = UserGroup(name="Analysts")
+    db_session.add(group)
+    await db_session.flush()
+    db_session.add(FolderGroupGrant(group_id=group.id, folder_id=granted.id))
+    await db_session.flush()
+
+    await expire_folders(db_session, now=NOW)
+    assert deleted == [granted.id]
+    assert kept.id not in deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_settings_override_the_env(db_session, world, deleted, monkeypatch):
+    _retention(monkeypatch, space=1000)
+    old = await world("old-space", "user", 10)
+
+    await set_retention_override(db_session, {"space": 5}, None)
+    await expire_folders(db_session, now=NOW)
+    assert deleted == [old.id]
+
+    deleted.clear()
+    await clear_retention_override(db_session)
+    await expire_folders(db_session, now=NOW)
+    assert deleted == []
+
+
+@pytest.mark.asyncio
+async def test_owner_and_admins_are_told(db_session, world, deleted, monkeypatch):
+    _retention(monkeypatch, space=5)
+    old = await world("old-space", "user", 10)
+    users = world.users
+
+    await expire_folders(db_session, now=NOW)
+    rows = (
+        await db_session.execute(
+            select(Notification.user_id, Notification.notification_metadata).where(
+                Notification.type == "account_event"
+            )
+        )
+    ).all()
+    kinds = {(uid, meta["kind"]) for uid, meta in rows}
+    assert (users["user"].id, "folder_expired") in kinds
+    assert (users["admin"].id, "retention_run") in kinds
+    assert deleted == [old.id]

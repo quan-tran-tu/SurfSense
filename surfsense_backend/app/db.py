@@ -1341,6 +1341,14 @@ class Folder(BaseModel, TimestampMixin):
         nullable=True,
         index=True,
     )
+    # The session a promoted root folder came from, so the promotion can be
+    # undone. NULL for folders uploaded space-wide; SET NULL when the chat goes.
+    promoted_from_thread_id = Column(
+        Integer,
+        ForeignKey("new_chat_threads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     updated_at = Column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -2372,6 +2380,30 @@ class FolderGroupGrant(BaseModel, TimestampMixin):
 
     group = relationship("UserGroup", back_populates="folder_grants")
     folder = relationship("Folder")
+
+
+class AppSetting(Base):
+    """A deployment-wide setting an admin changes from the UI, as JSON.
+
+    Overrides the matching env default while the row exists; deleting the row
+    falls back to the env again. See ``app.services.app_settings_service``.
+    """
+
+    __tablename__ = "app_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(JSONB, nullable=False)
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+    updated_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class PromptMode(StrEnum):

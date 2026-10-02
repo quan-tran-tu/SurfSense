@@ -3,12 +3,18 @@
  * and each token any number of importers; every import is shown as source →
  * target, so the admin can see exactly who reads whose folder and cut one pair
  * (remove the link), one token (hard-revoke) or change how long a token lasts.
+ *
+ * A token is live until revoked or expired, and both are final: the expiry of a
+ * live token can be moved or cleared, never set in the past and never on an
+ * ended token. Ending one now is a revoke.
  */
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { adminApi } from "../../api/client";
 import type { AdminLink, AdminShare } from "../../api/types";
-import { guard, toast } from "../../ui/toast";
+import { confirmThen } from "../../ui/confirm";
+import { ICON } from "../../ui/icons";
+import { toast } from "../../ui/toast";
 import { adminKeys, Badge, refreshAdmin, when } from "./common";
 
 interface SharedFolder {
@@ -19,13 +25,7 @@ interface SharedFolder {
   links: AdminLink[];
 }
 
-const isExpired = (s: AdminShare) => !!s.expires_at && Date.parse(s.expires_at) <= Date.now();
-
-function status(s: AdminShare): { text: string; cls: string } {
-  if (s.revoked_at) return { text: "revoked", cls: "dead" };
-  if (isExpired(s)) return { text: "expired", cls: "off" };
-  return { text: "live", cls: "admin" };
-}
+const STATUS_CLS = { live: "admin", expired: "off", revoked: "dead" } as const;
 
 /** Group every share and link under the folder it exposes. */
 function byFolder(shares: AdminShare[], links: AdminLink[]): SharedFolder[] {
@@ -56,23 +56,28 @@ const toLocalInput = (iso: string | null) => {
 
 function Expiry({ share }: { share: AdminShare }) {
   const [value, setValue] = useState(toLocalInput(share.expires_at));
-  const save = (expiresAt: string | null) => guard(async () => {
+  const save = (expiresAt: string | null) => confirmThen({
+    title: expiresAt ? `Expire token #${share.id} on ${when(expiresAt)}?` : `Make token #${share.id} never expire?`,
+    message: "Its owner is told in their activity log.",
+    confirmLabel: "Save",
+  }, async () => {
     await adminApi("PATCH", `/folder-shares/${share.id}`, { json: { expires_at: expiresAt } });
     toast(expiresAt ? `Token now expires ${when(expiresAt)}.` : "Token no longer expires.");
     await refreshAdmin();
   });
-  if (share.revoked_at) return <div className="expiry sub">Revoked {when(share.revoked_at)} — it can't be brought back.</div>;
+  // Ended is final: say how, and offer nothing that would pretend otherwise.
+  if (share.state === "revoked") return <div className="expiry sub">Revoked {when(share.revoked_at)} — it can't be brought back.</div>;
+  if (share.state === "expired") return <div className="expiry sub">Expired {when(share.expires_at)} — it can't be brought back.</div>;
+  const future = !!value && Date.parse(value) > Date.now();
   return (
     <div className="expiry">
       <span className="sub">Expires:</span>
       <strong>{share.expires_at ? when(share.expires_at) : "never"}</strong>
-      <input type="datetime-local" value={value} onChange={(e) => setValue(e.target.value)} />
-      <button className="sm" disabled={!value} onClick={() => save(new Date(value).toISOString())}>Set</button>
+      <input type="datetime-local" value={value} min={toLocalInput(new Date().toISOString())}
+        onChange={(e) => setValue(e.target.value)} />
+      <button className="sm" disabled={!future} title={value && !future ? "Pick a time in the future — to end it now, revoke it." : undefined}
+        onClick={() => save(new Date(value).toISOString())}>Set</button>
       {share.expires_at && <button className="sm" onClick={() => save(null)}>Never expire</button>}
-      {!isExpired(share) && (
-        <button className="sm" title="Stop it answering now; importers keep their link and can be revived by a later date."
-          onClick={() => save(new Date().toISOString())}>Expire now</button>
-      )}
     </div>
   );
 }
@@ -84,22 +89,23 @@ function FolderDetail({ folder }: { folder: SharedFolder }) {
         <div className="grow"><strong>{folder.name}</strong><div className="sub">owned by {folder.owner}</div></div>
       </header>
       {folder.shares.map((s) => {
-        const st = status(s);
         const links = folder.links.filter((l) => l.share_id === s.id);
         return (
           <div key={s.id} className="share">
             <header>
               <span className="grow">Token #{s.id}<span className="sub"> · created {when(s.created_at)}</span></span>
-              <Badge text={st.text} cls={st.cls} />
-              <button className="sm danger" onClick={() => {
-                if (confirm(`Hard-revoke token #${s.id} of "${folder.name}"?\n\nIt is removed from all ${s.link_count} importer(s)' knowledge bases immediately.`)) {
-                  guard(async () => {
-                    const r = await adminApi<{ links_removed?: number }>("DELETE", `/folder-shares/${s.id}`);
-                    toast(`Revoked — removed from ${r?.links_removed ?? 0} knowledge base(s).`);
-                    await refreshAdmin();
-                  });
-                }
-              }}>Hard-revoke</button>
+              <Badge text={s.state} cls={STATUS_CLS[s.state]} />
+              <button className="sm danger" title="Hard-revoke: end the token and remove it from every importer"
+                disabled={s.state === "revoked" && !s.link_count} onClick={() =>
+                confirmThen({
+                  title: `Hard-revoke token #${s.id} of "${folder.name}"?`,
+                  message: `It is removed from all ${s.link_count} importer(s)' knowledge bases immediately, and can't be brought back. Importers and the owner are told in their activity log.`,
+                  confirmLabel: "Hard-revoke", danger: true,
+                }, async () => {
+                  const r = await adminApi<{ links_removed?: number }>("DELETE", `/folder-shares/${s.id}`);
+                  toast(`Revoked — removed from ${r?.links_removed ?? 0} knowledge base(s).`);
+                  await refreshAdmin();
+                })}>{ICON.remove}</button>
             </header>
             <Expiry key={`${s.id}:${s.expires_at}`} share={s} />
             <h4>Imported by</h4>
@@ -111,15 +117,16 @@ function FolderDetail({ folder }: { folder: SharedFolder }) {
                   <span className="arrow">→</span>
                   <span className="end"><strong>{l.target_owner_email ?? `space #${l.target_search_space_id}`}</strong></span>
                 </div>
-                <button className="sm danger" onClick={() => {
-                  if (confirm(`Remove "${folder.name}" from ${l.target_owner_email ?? "that user"}'s knowledge base?\n\nThe owner's folder is untouched, and other importers keep it.`)) {
-                    guard(async () => {
-                      await adminApi("DELETE", `/folder-links/${l.id}`);
-                      toast("Import removed.");
-                      await refreshAdmin();
-                    });
-                  }
-                }}>Remove</button>
+                <button className="sm danger" title="Remove this import" onClick={() =>
+                  confirmThen({
+                    title: `Remove "${folder.name}" from ${l.target_owner_email ?? "that user"}'s knowledge base?`,
+                    message: "The owner's folder is untouched, and other importers keep it.",
+                    confirmLabel: "Remove", danger: true,
+                  }, async () => {
+                    await adminApi("DELETE", `/folder-links/${l.id}`);
+                    toast("Import removed.");
+                    await refreshAdmin();
+                  })}>{ICON.remove}</button>
               </div>
             ))}
           </div>
@@ -150,7 +157,7 @@ export function SharesTab() {
                 <tr><td className="empty" colSpan={5}>{shares.isPending || links.isPending ? "loading…" : "no shared folders"}</td></tr>
               )}
               {folders.map((f) => {
-                const live = f.shares.filter((s) => !s.revoked_at && !isExpired(s)).length;
+                const live = f.shares.filter((s) => s.state === "live").length;
                 return (
                   <tr key={f.id} className={f.id === selected ? "sel" : ""}
                     onClick={() => setSelected(f.id === selected ? null : f.id)}>

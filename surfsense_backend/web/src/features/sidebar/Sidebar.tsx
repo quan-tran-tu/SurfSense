@@ -5,13 +5,16 @@ import type { FolderLink, FolderNode } from "../../api/types";
 import { keys } from "../../queryClient";
 import { setState, useStore } from "../../store";
 import { setSidebarWidth, toggleSection, useCollapsed, useLayout } from "../../ui/layout";
-import { guard, toast } from "../../ui/toast";
+import { confirmThen } from "../../ui/confirm";
+import { ICON } from "../../ui/icons";
+import { guard } from "../../ui/toast";
 import { addSystemNote } from "../chat/messages";
-import { importFolder, listImports, loadTree, removeImport, unshareFolder, useIngest } from "../folders";
+import { EventsDialog, useEvents } from "../events";
+import { importFolder, listImports, listShares, loadTree, removeImport, unshareFolder, useIngest } from "../folders";
 import { clearScope, folderLabel, otherSession, pruneScope, setScope } from "../scope";
 import { createSession, deleteSession, listThreads, openThread } from "../session";
 import { addTemplates, removeTemplate } from "../templates";
-import { UploadDialog } from "./dialogs";
+import { TokenLine, UploadDialog } from "./dialogs";
 import { ReportList } from "./Reports";
 import { ActBtn, byName, FolderChildren, FolderRow, GroupingRow, ScopePick, TreeRow } from "./FolderTree";
 
@@ -52,9 +55,12 @@ function Sessions() {
           <div key={t.id} className={`item${t.id === threadId ? " active" : ""}`}
             onClick={() => t.id !== threadId && guard(() => openThread(t))}>
             <span className="name">{t.title}</span>
-            <ActBtn label="✕" cls="danger" onClick={() => {
-              if (confirm(`Delete session "${t.title}" and all of its messages?`)) guard(() => deleteSession(t));
-            }} />
+            <ActBtn label={ICON.remove} cls="danger" title="Delete this session" onClick={() =>
+              confirmThen({
+                title: `Delete session "${t.title}"?`,
+                message: "All of its messages are deleted. Folders uploaded for this session only become visible to every session.",
+                confirmLabel: "Delete", danger: true,
+              }, () => deleteSession(t))} />
           </div>
         ))}
       </div>
@@ -209,9 +215,12 @@ function Templates() {
               : "No headings detected — this template is used as a style exemplar only.") +
             `\n\nUse it: /report t${t.id} <query>`)}>
             <span className="name">t{t.id} · {t.name}</span>
-            <ActBtn label="✕" cls="danger" onClick={() => {
-              if (confirm(`Remove template t${t.id} "${t.name}"?`)) removeTemplate(t.id);
-            }} />
+            <ActBtn label={ICON.remove} cls="danger" title="Remove this template" onClick={() =>
+              confirmThen({
+                title: `Remove template t${t.id} "${t.name}"?`,
+                message: "It is kept only in this browser, so it can't be restored — upload the file again to bring it back.",
+                confirmLabel: "Remove", danger: true,
+              }, () => removeTemplate(t.id))} />
           </div>
         ))}
       </div>
@@ -241,13 +250,16 @@ function Imports({ nodes, links }: { nodes: FolderNode[] | undefined; links: Fol
                 title="Tick to ask questions only inside this imported folder." />}
               trail={<>
                 {link.live === false && (
-                  <span className="dead" title="The owner revoked this share or it expired, so it no longer answers questions.">revoked</span>
+                  <span className="dead" title={link.state === "expired"
+                    ? "The share's expiry passed, so it no longer answers questions."
+                    : "The owner revoked this share, so it no longer answers questions."}>{link.state}</span>
                 )}
-                <ActBtn label="✕" cls="danger" onClick={() => {
-                  if (confirm(`Remove the imported folder "${link.folder_name}"?\n\nOnly your link is removed — the owner's documents are untouched, and the same token can import it again.`)) {
-                    guard(() => removeImport(link));
-                  }
-                }} />
+                <ActBtn label={ICON.remove} cls="danger" title="Remove this import" onClick={() =>
+                  confirmThen({
+                    title: `Remove the imported folder "${link.folder_name}"?`,
+                    message: "Only your link is removed — the owner's documents are untouched, and a live token can import it again.",
+                    confirmLabel: "Remove", danger: true,
+                  }, () => removeImport(link))} />
               </>}>
               {() => (node ? <FolderChildren f={node} depth={1} nodes={nodes!} /> : <div className="empty">empty</div>)}
             </TreeRow>
@@ -265,30 +277,54 @@ function Imports({ nodes, links }: { nodes: FolderNode[] | undefined; links: Fol
 
 /* ------------------------------------------------------------------ shares */
 
-const day = (iso: string) => new Date(iso).toLocaleDateString();
-
+/**
+ * The tokens you minted and haven't revoked, read from the server — so they
+ * survive a new browser, and the same folder needn't be shared twice.
+ */
 function Shares() {
-  const shares = useStore((s) => s.shares);
+  const spaceId = useStore((s) => s.spaceId);
+  const shares = useQuery({ queryKey: keys.shares(spaceId), queryFn: listShares });
+  const list = shares.data ?? [];
   return (
     <Section id="shares" title="Shared by you">
-      {!shares.length && <div className="empty">nothing shared</div>}
-      {shares.map((s) => {
-        const expired = !!s.expiresAt && Date.parse(s.expiresAt) <= Date.now();
-        return (
-          <div key={s.token}>
-            <div className="item" style={{ cursor: "default" }}>
-              <span className="name mono">{s.path}</span>
-              <button className="sm" onClick={() => navigator.clipboard.writeText(s.token).then(() => toast("Token copied."))}>Copy</button>
-              <button className="sm danger" onClick={() => guard(() => unshareFolder(s.token))}>Revoke</button>
-            </div>
-            <div className="token mono">{s.token}</div>
-            <div className={`note${expired ? " warn" : ""}`} style={{ marginTop: 0 }}>
-              {!s.expiresAt ? "never expires" : expired ? `expired ${day(s.expiresAt)}` : `expires ${day(s.expiresAt)}`}
-            </div>
+      {shares.isPending && <div className="empty">loading…</div>}
+      {shares.data && !list.length && <div className="empty">nothing shared — Share on a folder makes a token</div>}
+      {list.map((s) => (
+        <div key={s.id}>
+          <div className="item" style={{ cursor: "default" }}>
+            <span className="name">{s.folder_name ?? `folder #${s.source_folder_id}`}</span>
+            {s.state !== "live" && <span className="badge off">{s.state}</span>}
+            <ActBtn label={ICON.remove} cls="danger" title={s.state === "live" ? "Revoke this token" : "Remove this ended token"}
+              onClick={() => confirmThen(s.state === "live" ? {
+                title: `Revoke the token for "${s.folder_name}"?`,
+                message: "Everyone who imported it loses access on their next question. A revoked token can't be brought back — share again for a new one.",
+                confirmLabel: "Revoke", danger: true,
+              } : {
+                title: `Remove the ${s.state} token for "${s.folder_name}"?`,
+                message: "It already grants nothing; this only clears it from the list.",
+                confirmLabel: "Remove",
+              }, () => unshareFolder(s.token))} />
           </div>
-        );
-      })}
+          <TokenLine s={s} />
+        </div>
+      ))}
     </Section>
+  );
+}
+
+/** The footer's way into the account log, with how much of it is new. */
+function ActivityButton() {
+  const events = useEvents();
+  const [open, setOpen] = useState(false);
+  const unread = (events.data ?? []).filter((e) => !e.read).length;
+  return (
+    <>
+      <button className={`sm${unread ? " primary" : ""}`} onClick={() => setOpen(true)}
+        title={unread ? `${unread} new event(s) while you were away` : "What changed for your account and folders"}>
+        Activity{unread ? ` · ${unread}` : ""}
+      </button>
+      {open && <EventsDialog onClose={() => setOpen(false)} />}
+    </>
   );
 }
 
@@ -352,6 +388,7 @@ export function Sidebar() {
       </div>
       <div className="side-foot">
         <span className="who-am-i" title={email}>{email}</span>
+        <ActivityButton />
         {isAdmin && (
           <button className="sm" onClick={() => {
             history.replaceState(null, "", "#admin");

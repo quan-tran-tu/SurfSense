@@ -10,7 +10,9 @@ The load-bearing invariants:
 * two sessions may own same-named roots whose documents coexist because the
   owning thread is mixed into ``unique_identifier_hash``;
 * promotion clears the stamp on the whole subtree and rewrites those hashes to
-  the space-wide form, refusing (409) when that would collide.
+  the space-wide form, refusing (409) when that would collide;
+* demotion undoes a promotion — back to the same session, hashes restored —
+  and is refused for a folder that was never promoted or is shared.
 """
 
 import pytest
@@ -34,13 +36,17 @@ from app.db import (
     Folder,
     NewChatThread,
     SearchSpace,
+    SharedFolder,
     User,
 )
 from app.indexing_pipeline.document_hashing import (
     compute_identifier_hash,
     local_file_unique_id,
 )
-from app.services.folder_scope_service import promote_folder_to_space
+from app.services.folder_scope_service import (
+    demote_folder_to_session,
+    promote_folder_to_space,
+)
 from app.utils.document_converters import generate_unique_identifier_hash
 
 DOC_PATH = "/documents/Research/Notes.xml"
@@ -339,6 +345,58 @@ async def test_promote_space_wide_folder_is_400(db_session, two_sessions):
     with pytest.raises(HTTPException) as excinfo:
         await promote_folder_to_space(db_session, folder_a)
     assert excinfo.value.status_code == 400
+
+
+# ------------------------------------------------------------------- demote
+
+
+@pytest.mark.asyncio
+async def test_demote_returns_folder_to_its_session(db_session, two_sessions):
+    space_id = two_sessions["space_id"]
+    thread_a, thread_b = two_sessions["threads"]
+    folder_a, _ = two_sessions["folders"]
+    doc_a, _ = two_sessions["docs"]
+
+    await promote_folder_to_space(db_session, folder_a)
+    assert folder_a.promoted_from_thread_id == thread_a.id
+
+    result = await demote_folder_to_session(db_session, folder_a)
+    assert result["thread_id"] == thread_a.id
+    await db_session.refresh(folder_a)
+    await db_session.refresh(doc_a)
+    assert folder_a.owner_thread_id == thread_a.id
+    assert folder_a.promoted_from_thread_id is None
+    assert doc_a.unique_identifier_hash == _note_hash(DOC_PATH, space_id, thread_a.id)
+
+    index = await build_path_index(db_session, space_id, thread_id=thread_b.id)
+    assert folder_a.id not in index.folder_paths
+
+
+@pytest.mark.asyncio
+async def test_demote_never_promoted_folder_is_400(db_session, two_sessions):
+    space_id = two_sessions["space_id"]
+    folder = Folder(name="Uploaded wide", position="a2", search_space_id=space_id)
+    db_session.add(folder)
+    await db_session.flush()
+    with pytest.raises(HTTPException) as excinfo:
+        await demote_folder_to_session(db_session, folder)
+    assert excinfo.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_demote_shared_folder_is_409(db_session, two_sessions):
+    space_id = two_sessions["space_id"]
+    folder_a, _ = two_sessions["folders"]
+    await promote_folder_to_space(db_session, folder_a)
+    db_session.add(
+        SharedFolder(
+            token="t-demote", source_folder_id=folder_a.id, source_search_space_id=space_id
+        )
+    )
+    await db_session.flush()
+    with pytest.raises(HTTPException) as excinfo:
+        await demote_folder_to_session(db_session, folder_a)
+    assert excinfo.value.status_code == 409
 
 
 # ---------------------------------------------------------------- upload ids

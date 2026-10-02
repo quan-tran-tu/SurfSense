@@ -22,7 +22,10 @@ from app.schemas import (
     FolderScopeUpdate,
     FolderUpdate,
 )
-from app.services.folder_scope_service import promote_folder_to_space
+from app.services.folder_scope_service import (
+    demote_folder_to_session,
+    promote_folder_to_space,
+)
 from app.services.folder_sharing_service import (
     get_admin_visible_roots,
     get_group_granted_roots,
@@ -141,6 +144,8 @@ class FolderTreeNode(BaseModel):
     # space this one cannot read, so it is cleared rather than left dangling.
     parent_id: int | None
     owner_thread_id: int | None = None
+    # Set on a root promoted out of that session: it can be scoped back there.
+    promoted_from_thread_id: int | None = None
     # own: this space's folder. linked: read through a share link. user: a
     # non-admin user's folder, read by a system admin. group: granted by an admin
     # to a user group this space's owner belongs to.
@@ -237,6 +242,7 @@ async def get_folder_tree(
             name=f.name,
             parent_id=f.parent_id,
             owner_thread_id=f.owner_thread_id,
+            promoted_from_thread_id=f.promoted_from_thread_id,
             origin="own",
             document_count=counts.get(f.id, 0),
         )
@@ -594,14 +600,14 @@ async def update_folder_scope(
     session: AsyncSession = Depends(get_async_session),
     auth: AuthContext = Depends(get_auth_context),
 ):
-    """Promote a session-scoped folder subtree to space-wide ("general knowledge").
+    """Promote a session-scoped folder subtree to space-wide, or undo that.
 
-    Nothing is copied or re-embedded — the session stamp is cleared and the
-    documents' identity hashes are recomputed to their space-wide form. After
-    this, every chat session in the space sees the folder. Requires
-    DOCUMENTS_UPDATE. There is no demotion; re-upload into a session instead.
+    Nothing is copied or re-embedded — the session stamp is cleared (or put
+    back) and the documents' identity hashes are recomputed to match. After a
+    promotion every chat session in the space sees the folder; ``"session"``
+    returns a promoted folder to the session it came from. Requires
+    DOCUMENTS_UPDATE.
     """
-    del request  # scope can only be "space"; validated by the schema
     folder = await session.get(Folder, folder_id)
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
@@ -614,6 +620,9 @@ async def update_folder_scope(
         "You don't have permission to update folders in this search space",
     )
 
+    if request.scope == "session":
+        result = await demote_folder_to_session(session, folder)
+        return {"message": f"Folder '{folder.name}' is session-only again", **result}
     result = await promote_folder_to_space(session, folder)
     return {"message": f"Folder '{folder.name}' is now space-wide", **result}
 

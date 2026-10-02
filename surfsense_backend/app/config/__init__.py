@@ -782,10 +782,13 @@ class Config:
 
     # Folder retention, in days, per kind of root folder; unset or 0 keeps them
     # forever. A daily beat task (folder_retention_task) deletes older folders
-    # with their documents, counting from upload (Folder.created_at). Set by the
-    # deployment, not by users: session-only uploads, space-wide folders an admin
-    # uploaded, and every other space-wide folder (promoted ones included).
+    # with their documents, counting from upload (Folder.created_at). These are
+    # the deployment defaults; an admin can override them from the admin page
+    # (app_settings). Kinds: session-only uploads, folders granted to a user
+    # group, space-wide folders an admin uploaded, and every other space-wide
+    # folder (promoted ones included).
     SESSION_FOLDER_RETENTION_DAYS = _retention_days("SESSION_FOLDER_RETENTION_DAYS")
+    GROUP_FOLDER_RETENTION_DAYS = _retention_days("GROUP_FOLDER_RETENTION_DAYS")
     ADMIN_FOLDER_RETENTION_DAYS = _retention_days("ADMIN_FOLDER_RETENTION_DAYS")
     SPACE_FOLDER_RETENTION_DAYS = _retention_days("SPACE_FOLDER_RETENTION_DAYS")
 

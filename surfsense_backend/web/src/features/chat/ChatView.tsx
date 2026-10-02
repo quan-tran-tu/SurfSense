@@ -3,6 +3,7 @@ import { Markdown } from "../../lib/Markdown";
 import type { Template } from "../../api/types";
 import { useStore, type ChatMessage } from "../../store";
 import { toggleSidebar, useLayout } from "../../ui/layout";
+import { confirmAction } from "../../ui/confirm";
 import { guard, toast } from "../../ui/toast";
 import { clearScope } from "../scope";
 import { SESSION_CONTEXT_MAX, setSessionContext } from "../sessionContext";
@@ -101,8 +102,12 @@ function ContextPanel({ onClose }: { onClose: () => void }) {
         placeholder="Facts every answer in this session should take as true — e.g. “Since 08/2026, Nguyễn Văn A is Minister of Finance (no longer Deputy Minister).” Newer than your documents: where they disagree, this wins." />
       <div className="row">
         <span className="note">{text.length}/{SESSION_CONTEXT_MAX} · this session only, never saved to the knowledge base</span>
-        <button className="sm danger" onClick={() => {
-          if (!note || confirm("Clear this session's context?")) {
+        <button className="sm danger" onClick={async () => {
+          if (!note || await confirmAction({
+            title: "Clear this session's context?",
+            message: "Answers in this session stop taking it as true.",
+            confirmLabel: "Clear", danger: true,
+          })) {
             setSessionContext("");
             toast("Session context cleared.");
             onClose();

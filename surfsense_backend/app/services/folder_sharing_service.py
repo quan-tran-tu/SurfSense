@@ -25,8 +25,10 @@ token for them.
 """
 
 import secrets
+from datetime import UTC, datetime
+from typing import Literal
 
-from sqlalchemy import Select, func, or_, select, union_all
+from sqlalchemy import Select, and_, func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -52,6 +54,33 @@ SHARED_PREFIX = "_shared"
 def generate_share_token() -> str:
     """Mint an opaque share token. 43 chars, fits ``shared_folders.token`` (64)."""
     return secrets.token_urlsafe(32)
+
+
+ShareState = Literal["live", "revoked", "expired"]
+
+
+def share_is_live():
+    """SQL predicate: the share still grants access.
+
+    A share ends in one of two ways, and both are final: it is revoked, or its
+    expiry passes. Nothing brings an ended share back — an expiry can only be
+    moved while the share is still live, and never into the past (to end it now,
+    revoke it). So "live" is the only state a reader ever needs to test, and this
+    is the one definition of it; Python callers use :func:`share_state`.
+    """
+    return and_(
+        SharedFolder.revoked_at.is_(None),
+        or_(SharedFolder.expires_at.is_(None), SharedFolder.expires_at > func.now()),
+    )
+
+
+def share_state(share: SharedFolder, now: datetime | None = None) -> ShareState:
+    """``share_is_live`` in Python, naming how an ended share ended."""
+    if share.revoked_at is not None:
+        return "revoked"
+    if share.expires_at is not None and share.expires_at <= (now or datetime.now(UTC)):
+        return "expired"
+    return "live"
 
 
 def _in_spaces(column, search_space_id: int | Select | list[int]):
@@ -175,11 +204,7 @@ def linked_folder_ids_subquery(search_space_id: int | Select | list[int]):
         .join(SharedFolder, SharedFolder.id == FolderLink.share_id)
         .where(
             _in_spaces(FolderLink.target_search_space_id, search_space_id),
-            SharedFolder.revoked_at.is_(None),
-            or_(
-                SharedFolder.expires_at.is_(None),
-                SharedFolder.expires_at > func.now(),
-            ),
+            share_is_live(),
         )
     )
     admin_roots = _admin_visible_roots(search_space_id).subquery("admin_roots")
@@ -246,11 +271,7 @@ async def live_link_fingerprint(
         .join(SharedFolder, SharedFolder.id == FolderLink.share_id)
         .where(
             FolderLink.target_search_space_id == search_space_id,
-            SharedFolder.revoked_at.is_(None),
-            or_(
-                SharedFolder.expires_at.is_(None),
-                SharedFolder.expires_at > func.now(),
-            ),
+            share_is_live(),
         )
     )
     row = result.one()
@@ -299,11 +320,7 @@ async def get_linked_folder_roots(
         .join(SharedFolder, SharedFolder.id == FolderLink.share_id)
         .where(
             FolderLink.target_search_space_id == search_space_id,
-            SharedFolder.revoked_at.is_(None),
-            or_(
-                SharedFolder.expires_at.is_(None),
-                SharedFolder.expires_at > func.now(),
-            ),
+            share_is_live(),
         )
     )
     return list(result.scalars().all())

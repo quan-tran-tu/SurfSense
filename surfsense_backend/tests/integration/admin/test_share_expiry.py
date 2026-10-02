@@ -1,4 +1,8 @@
-"""An admin can set, move and clear a folder share's expiry."""
+"""An admin can move and clear a live share's expiry — and nothing else.
+
+Revoked and expired are final: an ended share can't be changed (409), and an
+expiry can't be set in the past (422) — ending a share now is a revoke.
+"""
 
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -65,6 +69,51 @@ async def test_admin_sets_and_clears_expiry(db_session):
     await update_share_expiry(share.id, AdminShareUpdate(expires_at=None), db_session, auth)
     await db_session.refresh(share)
     assert share.expires_at is None
+
+
+async def test_past_expiry_is_refused(db_session):
+    admin, share = await _share(db_session)
+    with pytest.raises(HTTPException) as err:
+        await update_share_expiry(
+            share.id,
+            AdminShareUpdate(expires_at=datetime.now(UTC) - timedelta(minutes=1)),
+            db_session,
+            AuthContext.session(admin),
+        )
+    assert err.value.status_code == 422
+
+
+async def test_expired_share_cannot_be_revived(db_session):
+    admin, share = await _share(db_session)
+    share.expires_at = datetime.now(UTC) - timedelta(days=1)
+    await db_session.flush()
+    with pytest.raises(HTTPException) as err:
+        await update_share_expiry(
+            share.id, AdminShareUpdate(expires_at=None), db_session, AuthContext.session(admin)
+        )
+    assert err.value.status_code == 409
+
+
+async def test_revoked_share_cannot_be_changed(db_session):
+    admin, share = await _share(db_session)
+    share.revoked_at = datetime.now(UTC)
+    await db_session.flush()
+    with pytest.raises(HTTPException) as err:
+        await update_share_expiry(
+            share.id,
+            AdminShareUpdate(expires_at=datetime.now(UTC) + timedelta(days=1)),
+            db_session,
+            AuthContext.session(admin),
+        )
+    assert err.value.status_code == 409
+
+
+async def test_listing_reports_state(db_session):
+    admin, share = await _share(db_session)
+    share.expires_at = datetime.now(UTC) - timedelta(days=1)
+    await db_session.flush()
+    rows = await list_folder_shares(db_session, AuthContext.session(admin))
+    assert next(r for r in rows if r.id == share.id).state == "expired"
 
 
 async def test_listing_names_the_shared_folder(db_session):

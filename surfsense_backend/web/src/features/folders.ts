@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { api, apiJson, ApiError } from "../api/client";
-import type { FolderDocument, FolderLink, FolderNode, WatchedFolder } from "../api/types";
+import type { FolderDocument, FolderLink, FolderNode, FolderShare, WatchedFolder } from "../api/types";
 import { refreshFolders } from "../queryClient";
-import { getState, setPersisted } from "../store";
+import { getState } from "../store";
+import { confirmAction } from "../ui/confirm";
 import { toast } from "../ui/toast";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -21,6 +22,10 @@ export const folderDocs = (folderId: number) =>
  */
 export const listImports = () =>
   apiJson<FolderLink[]>("GET", `/api/v1/search-spaces/${getState().spaceId}/folder-links`);
+
+/** Tokens this user minted in the space and hasn't revoked — kept server-side. */
+export const listShares = () =>
+  apiJson<FolderShare[]>("GET", `/api/v1/search-spaces/${getState().spaceId}/folder-shares`);
 
 const watchedFolders = () =>
   apiJson<WatchedFolder[]>("GET", `/api/v1/documents/watched-folders?search_space_id=${getState().spaceId}`);
@@ -139,7 +144,11 @@ export async function ingest(fileList: File[], sessionOnly: boolean) {
   // too: another session's "root" is a different folder, not a rebuild.
   const existing = ((await watchedFolders()) ?? []).find(
     (f) => f.name === root && (f.owner_thread_id ?? null) === threadId);
-  if (existing && !confirm(`"${root}" is already indexed${threadId ? " in this session" : ""}. Rebuild it? Its documents will be deleted and re-extracted.`)) return;
+  if (existing && !await confirmAction({
+    title: `Rebuild "${root}"?`,
+    message: `It is already indexed${threadId ? " in this session" : ""}. Its documents will be deleted and re-extracted.`,
+    confirmLabel: "Rebuild", danger: true,
+  })) return;
 
   const progress = (text: string, frac: number) => useIngest.setState({ text, frac });
   try {
@@ -208,20 +217,30 @@ export async function promoteFolder(f: FolderNode) {
   await refreshFolders();
 }
 
+/** Undo ⤴: the folder goes back to the session it was promoted from. */
+export async function demoteFolder(f: FolderNode) {
+  await api("PATCH", `/api/v1/folders/${f.id}/scope`, { json: { scope: "session" } });
+  toast(`"${f.name}" is session-only again — only session #${f.promoted_from_thread_id} sees it.`, "ok", 8000);
+  await refreshFolders();
+}
+
 /** Mint a share token for a space-wide folder; `expiresAt` null means it never expires. */
 export async function shareFolder(path: string, expiresAt: string | null) {
   const { token } = await apiJson<{ token: string }>(
     "POST", `/api/v1/search-spaces/${getState().spaceId}/folder-shares`,
     { json: { path, expires_at: expiresAt ?? undefined } });
-  setPersisted({ shares: [...getState().shares, { path, token, expiresAt }] });
-  toast(`Share token for "${path}" created. Hand it to the other user — they paste it under Imported.`, "ok", 10000);
+  await refreshFolders();
+  return token;
 }
 
 export async function unshareFolder(token: string) {
   await api("DELETE", `/api/v1/folder-shares/${token}`);
-  setPersisted({ shares: getState().shares.filter((s) => s.token !== token) });
   toast("Revoked. Importers lose access on their next query.", "ok");
+  await refreshFolders();
 }
+
+export const copyToken = (token: string) =>
+  navigator.clipboard.writeText(token).then(() => toast("Token copied."), () => toast("Copy failed — select the token and copy it.", "warn"));
 
 export async function importFolder(token: string) {
   const { folder_name } = await apiJson<{ folder_name: string }>(

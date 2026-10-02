@@ -1,7 +1,12 @@
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import type { FolderShare } from "../../api/types";
+import { keys } from "../../queryClient";
+import { useStore } from "../../store";
 import { Dialog } from "../../ui/Dialog";
+import { ICON } from "../../ui/icons";
 import { guard } from "../../ui/toast";
-import { collectFiles, ingest, shareFolder } from "../folders";
+import { collectFiles, copyToken, ingest, listShares, shareFolder } from "../folders";
 
 /**
  * Where an upload is visible, asked once the folder is picked — rather than a
@@ -38,27 +43,61 @@ const EXPIRY = [
   { label: "Never", days: 0 },
 ];
 
-/** Mint a share token, with how long it lets people import the folder. */
-export function ShareDialog({ path, onClose }: { path: string; onClose: () => void }) {
+export const expiryText = (s: Pick<FolderShare, "expires_at" | "state">) =>
+  s.state === "expired" ? `expired ${new Date(s.expires_at!).toLocaleString()}`
+    : s.expires_at ? `expires ${new Date(s.expires_at).toLocaleString()}` : "never expires";
+
+/** A token row: the token itself, its expiry, and copy. */
+export function TokenLine({ s }: { s: FolderShare }) {
+  return (
+    <>
+      <div className="stack" style={{ alignItems: "center" }}>
+        <div className="token mono grow">{s.token}</div>
+        <button className="sm" title="Copy the token" disabled={s.state !== "live"}
+          onClick={() => copyToken(s.token)}>{ICON.copy}</button>
+      </div>
+      <div className={`note${s.state !== "live" ? " warn" : ""}`} style={{ marginTop: 0 }}>{expiryText(s)}</div>
+    </>
+  );
+}
+
+/**
+ * Share a folder. A folder that already has a working token shows it, so the
+ * same folder doesn't collect a new token every time someone asks for it; a new
+ * one is still a click away (e.g. with a different expiry).
+ */
+export function ShareDialog({ folderId, path, onClose }: { folderId: number; path: string; onClose: () => void }) {
+  const spaceId = useStore((s) => s.spaceId);
+  const shares = useQuery({ queryKey: keys.shares(spaceId), queryFn: listShares });
+  const live = (shares.data ?? []).filter((s) => s.source_folder_id === folderId && s.state === "live");
   const [days, setDays] = useState(7);
-  const share = () => {
+  const [minted, setMinted] = useState<string | null>(null);
+  const share = () => guard(async () => {
     const expiresAt = days ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
-    onClose();
-    guard(() => shareFolder(path, expiresAt));
-  };
+    setMinted(await shareFolder(path, expiresAt));
+  });
   return (
     <Dialog title={`Share "${path}"`} onClose={onClose}>
       <p className="sub">
-        Anyone you hand the token to can import this folder, read-only, until it expires or you
-        revoke it. Once it expires, their imports stop answering.
+        Anyone you hand a token to can import this folder, read-only, until it expires or you
+        revoke it. Tokens are listed under "Shared by you" until you revoke them.
       </p>
-      <label htmlFor="shareExpiry">Expires after</label>
+      {live.length > 0 && <>
+        <label>{live.length === 1 ? "Its token" : "Its tokens"}</label>
+        {live.map((s) => <TokenLine key={s.id} s={s} />)}
+      </>}
+      {minted && !live.some((s) => s.token === minted) && (
+        <div className="token mono">{minted}</div>
+      )}
+      <label htmlFor="shareExpiry">{live.length ? "Or create another token, expiring after" : "Expires after"}</label>
       <select id="shareExpiry" value={days} onChange={(e) => setDays(Number(e.target.value))}>
         {EXPIRY.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
       </select>
       <div className="actions">
-        <button className="primary sm" onClick={share}>Create token</button>
-        <button className="sm" onClick={onClose}>Cancel</button>
+        <button className={`sm${live.length ? "" : " primary"}`} onClick={share}>
+          {live.length ? "Create another token" : "Create token"}
+        </button>
+        <button className="sm" onClick={onClose}>Close</button>
       </div>
     </Dialog>
   );

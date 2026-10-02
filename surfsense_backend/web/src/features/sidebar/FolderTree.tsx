@@ -13,8 +13,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { FolderDocument, FolderNode } from "../../api/types";
 import { keys } from "../../queryClient";
 import { setState, useStore } from "../../store";
-import { guard, toast } from "../../ui/toast";
-import { deleteFolder, folderDocs, promoteFolder } from "../folders";
+import { confirmThen } from "../../ui/confirm";
+import { ICON } from "../../ui/icons";
+import { toast } from "../../ui/toast";
+import { deleteFolder, demoteFolder, folderDocs, promoteFolder } from "../folders";
 import { folderLabel, toggleScope } from "../scope";
 import { refreshFolders } from "../../queryClient";
 import { ShareDialog } from "./dialogs";
@@ -131,28 +133,43 @@ export function FolderRow({ f, depth, nodes }: { f: FolderNode; depth: number; n
     : <ScopePick ids={[f.id]} names={{ [f.id]: folderLabel(f) }}
         title="Tick to ask questions only inside this folder (and everything under it)." />;
 
+  // Promoted out of a session that still exists: ⤵ can put it back there.
+  const from = f.promoted_from_thread_id;
   const trail = actionable && (
     <>
       {scoped ? (
         <>
           {/* Label whose it is, so two same-named rows are tellable apart. */}
           <span className="badge">{mine ? "this session" : `session #${f.owner_thread_id}`}</span>
-          <ActBtn label="⤴" title="Make this folder space-wide: every chat session will see it." onClick={() => {
-            if (confirm(`Make "${f.name}" space-wide? Every chat session will then see and search it. This cannot be scoped back.`)) {
-              guard(() => promoteFolder(f));
-            }
-          }} />
+          <ActBtn label={ICON.promote} title="Make this folder space-wide: every chat session will see it." onClick={() =>
+            confirmThen({
+              title: `Make "${f.name}" space-wide?`,
+              message: "Every chat session will then see and search it. ⤵ can scope it back to this session later.",
+              confirmLabel: "Make space-wide",
+            }, () => promoteFolder(f))} />
         </>
       ) : (
-        // The backend refuses to share a session-scoped folder, so only a
-        // space-wide one gets the button.
-        <ActBtn label="Share" onClick={() => setSharing(true)} />
+        <>
+          {from != null && (
+            <ActBtn label={ICON.demote}
+              title={`Make it session-only again: only ${from === threadId ? "this session" : `session #${from}`}, where it was uploaded, will see it.`}
+              onClick={() => confirmThen({
+                title: `Scope "${f.name}" back to ${from === threadId ? "this session" : `session #${from}`}?`,
+                message: "Your other chat sessions stop seeing it. A folder that is shared or granted to a group must be revoked first.",
+                confirmLabel: "Make session-only",
+              }, () => demoteFolder(f))} />
+          )}
+          {/* The backend refuses to share a session-scoped folder, so only a
+              space-wide one gets the button. */}
+          <ActBtn label="Share" onClick={() => setSharing(true)} />
+        </>
       )}
-      <ActBtn label="✕" cls="danger" onClick={() => {
-        if (confirm(`Remove "${f.name}" and all of its documents?`)) {
-          guard(async () => { await deleteFolder(f.id); toast(`Removed "${f.name}".`); await refreshFolders(); });
-        }
-      }} />
+      <ActBtn label={ICON.remove} cls="danger" title="Delete this folder and its documents" onClick={() =>
+        confirmThen({
+          title: `Delete "${f.name}"?`,
+          message: "The folder and all of its documents are deleted. Anyone reading it through a share or a group loses it too. This can't be undone.",
+          confirmLabel: "Delete", danger: true,
+        }, async () => { await deleteFolder(f.id); toast(`Removed "${f.name}".`); await refreshFolders(); })} />
     </>
   );
 
@@ -163,7 +180,7 @@ export function FolderRow({ f, depth, nodes }: { f: FolderNode; depth: number; n
         lead={lead} trail={trail}>
         {() => <FolderChildren f={f} depth={depth + 1} nodes={nodes} />}
       </TreeRow>
-      {sharing && <ShareDialog path={f.name} onClose={() => setSharing(false)} />}
+      {sharing && <ShareDialog folderId={f.id} path={f.name} onClose={() => setSharing(false)} />}
     </>
   );
 }

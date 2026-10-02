@@ -12,6 +12,7 @@ NotificationType = Literal[
     "comment_reply",
     "insufficient_credits",
     "auto_reload_failed",
+    "account_event",
 ]
 
 NotificationCategory = Literal["comments", "status"]

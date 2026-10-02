@@ -8,6 +8,7 @@ import { reportIdFromHash } from "./features/report/route";
 import { detectAdmin } from "./features/session";
 import { Sidebar } from "./features/sidebar/Sidebar";
 import { useStore } from "./store";
+import { ConfirmHost } from "./ui/confirm";
 import { Toasts } from "./ui/toast";
 
 // How often an open page re-reads the user's role, so a revoked admin loses the
@@ -50,7 +51,7 @@ export function App() {
 
   if (boot === "resuming") return <div id="auth" className="sub">Loading…</div>;
   if (reportId != null && signedIn) {
-    return <><ReportCanvas key={reportId} id={reportId} /><Toasts /></>;
+    return <><ReportCanvas key={reportId} id={reportId} /><ConfirmHost /><Toasts /></>;
   }
   return (
     <>
@@ -62,6 +63,7 @@ export function App() {
         </div>
       )}
       {signedIn && adminOpen && <AdminView />}
+      <ConfirmHost />
       <Toasts />
     </>
   );

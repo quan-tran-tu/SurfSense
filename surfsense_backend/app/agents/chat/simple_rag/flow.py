@@ -116,7 +116,11 @@ def _plural(count: int, noun: str) -> str:
 
 
 async def _workspace_block(
-    *, search_space_id: int, thread_id: int | None, llm: Any
+    *,
+    search_space_id: int,
+    thread_id: int | None,
+    llm: Any,
+    folder_ids: list[int] | None = None,
 ) -> str | None:
     """Render the user's folder/document listing, led by its exact totals.
 
@@ -126,6 +130,10 @@ async def _workspace_block(
     count what it was shown reports the truncated number with full confidence.
     Stating them makes the count correct at any corpus size, so no upload quota
     is needed to keep it honest.
+
+    ``folder_ids`` are the folders the question is scoped to. The listing is cut
+    down to them, as the search is: "how many files are in this folder?" must be
+    counted inside the picked folder, not across the whole workspace.
 
     Returns ``None`` if the render fails, which leaves the turn answering from
     passages alone — the behaviour this flow had before the listing existed.
@@ -141,15 +149,27 @@ async def _workspace_block(
                 # ``current_thread_id`` would be ``None`` here.
                 thread_id=thread_id,
                 llm=llm,
+                folder_ids=folder_ids,
             )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("[simple_rag] workspace listing unavailable: %s", exc)
         return None
 
-    lines = [
-        f"This workspace contains exactly {_plural(tree.folder_count, 'folder')} "
-        f"and {_plural(tree.document_count, 'document')}."
-    ]
+    if folder_ids:
+        names = ", ".join(p.rsplit("/", 1)[-1] for p in tree.scope_paths) or "none readable here"
+        subfolders = max(tree.folder_count - len(tree.scope_paths), 0)
+        lines = [
+            "This question is limited to the selected folder(s): "
+            f"{names}. Together they contain exactly "
+            f"{_plural(subfolders, 'subfolder')} and "
+            f"{_plural(tree.document_count, 'document')}. The rest of the "
+            "workspace is not shown and does not count."
+        ]
+    else:
+        lines = [
+            f"This workspace contains exactly {_plural(tree.folder_count, 'folder')} "
+            f"and {_plural(tree.document_count, 'document')}."
+        ]
     if tree.truncated:
         lines.append(
             "The listing below is abbreviated to fit, but the totals above are "
@@ -216,7 +236,10 @@ async def stream_simple_rag(
     # listing, which no amount of passage retrieval can substitute for.
     workspace = (
         await _workspace_block(
-            search_space_id=search_space_id, thread_id=thread_id, llm=llm
+            search_space_id=search_space_id,
+            thread_id=thread_id,
+            llm=llm,
+            folder_ids=mentioned_folder_ids,
         )
         if mentions_workspace(question)
         else None

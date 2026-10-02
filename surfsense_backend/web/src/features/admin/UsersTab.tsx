@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { adminApi } from "../../api/client";
 import type { AdminFolder, AdminGroupMember, AdminUser } from "../../api/types";
 import { useStore } from "../../store";
+import { confirmThen } from "../../ui/confirm";
+import { ICON } from "../../ui/icons";
 import { guard, toast } from "../../ui/toast";
 import { byName } from "../sidebar/FolderTree";
 import { adminKeys, Badge, refreshAdmin, useAdminGroups, useAdminUsers, when } from "./common";
@@ -88,26 +90,40 @@ function UserFolders({ user }: { user: AdminUser }) {
             {depth === 0 && f.owner_thread_id != null && <Badge text={`session #${f.owner_thread_id}`} cls="off" />}
           </div>
           {depth === 0 && f.owner_thread_id != null && (
-            <button className="sm" title="Make this folder space-wide: every session of theirs will see it." onClick={() => {
-              if (confirm(`Make "${f.name}" (of ${user.email}) space-wide? All of their sessions will see it — and so will every admin.`)) {
-                guard(async () => {
-                  await adminApi("PATCH", `/folders/${f.id}/scope`);
-                  toast(`"${f.name}" is now space-wide.`);
-                  await refreshAdmin();
-                });
-              }
-            }}>⤴</button>
+            <button className="sm" title="Make this folder space-wide: every session of theirs will see it." onClick={() =>
+              confirmThen({
+                title: `Make "${f.name}" space-wide?`,
+                message: `All of ${user.email}'s sessions will see it — and so will every admin. ⤵ can scope it back. They are told in their activity log.`,
+                confirmLabel: "Make space-wide",
+              }, async () => {
+                await adminApi("PATCH", `/folders/${f.id}/scope`, { json: { scope: "space" } });
+                toast(`"${f.name}" is now space-wide.`);
+                await refreshAdmin();
+              })}>{ICON.promote}</button>
+          )}
+          {depth === 0 && f.owner_thread_id == null && f.promoted_from_thread_id != null && (
+            <button className="sm" title={`Make it session-only again, in session #${f.promoted_from_thread_id} where it was uploaded.`} onClick={() =>
+              confirmThen({
+                title: `Scope "${f.name}" back to session #${f.promoted_from_thread_id}?`,
+                message: `Only that session of ${user.email}'s will see it; admins stop seeing it. Shares and group grants must be revoked first.`,
+                confirmLabel: "Make session-only",
+              }, async () => {
+                await adminApi("PATCH", `/folders/${f.id}/scope`, { json: { scope: "session" } });
+                toast(`"${f.name}" is session-only again.`);
+                await refreshAdmin();
+              })}>{ICON.demote}</button>
           )}
           {depth === 0 && (
-            <button className="sm danger" onClick={() => {
-              if (confirm(`Delete folder "${f.name}" (of ${user.email}) and its documents?`)) {
-                guard(async () => {
-                  await adminApi("DELETE", `/folders/${f.id}`);
-                  toast(`Deleting "${f.name}" (documents are queued for removal).`);
-                  await refreshAdmin();
-                });
-              }
-            }}>Delete</button>
+            <button className="sm danger" title="Delete this folder and its documents" onClick={() =>
+              confirmThen({
+                title: `Delete "${f.name}" of ${user.email}?`,
+                message: "The folder and all of its documents are deleted, and with them every share and group grant on it. This can't be undone.",
+                confirmLabel: "Delete", danger: true,
+              }, async () => {
+                await adminApi("DELETE", `/folders/${f.id}`);
+                toast(`Deleting "${f.name}" (documents are queued for removal).`);
+                await refreshAdmin();
+              })}>{ICON.remove}</button>
           )}
         </div>,
       );
@@ -147,11 +163,16 @@ function UserGroups({ user }: { user: AdminUser }) {
         <div key={g.id} className="arow">
           <div className="grow">{g.name}</div>
           <span className="sub">{g.folder_count} folder(s)</span>
-          <button className="sm danger" onClick={() => guard(async () => {
-            await adminApi("DELETE", `/groups/${g.id}/members/${user.id}`);
-            toast(`Removed ${user.email} from ${g.name}.`);
-            await refreshAdmin();
-          })}>Remove</button>
+          <button className="sm danger" title={`Remove from ${g.name}`} onClick={() =>
+            confirmThen({
+              title: `Remove ${user.email} from ${g.name}?`,
+              message: `They lose the group's ${g.folder_count} folder(s) on their next question.`,
+              confirmLabel: "Remove", danger: true,
+            }, async () => {
+              await adminApi("DELETE", `/groups/${g.id}/members/${user.id}`);
+              toast(`Removed ${user.email} from ${g.name}.`);
+              await refreshAdmin();
+            })}>{ICON.remove}</button>
         </div>
       ))}
       {!user.is_superuser && <div className="arow">
@@ -186,7 +207,7 @@ function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
     <aside className="udetail">
       <header>
         <div className="grow"><strong>{u.display_name || u.email}</strong><div className="sub">{u.email}</div></div>
-        <button className="sm" onClick={onClose}>✕</button>
+        <button className="sm" title="Close" onClick={onClose}>{ICON.remove}</button>
       </header>
       <div className="sub" style={{ marginTop: 8, whiteSpace: "pre-line" }}>
         {`${u.search_space_count} space(s) · ${u.folder_count} folder(s) · ${u.document_count} document(s)\nlast sign-in: ${when(u.last_login)}`}
@@ -195,30 +216,48 @@ function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
       <h3>Display name</h3>
       <div className="stack">
         <input placeholder="shown instead of the email" value={name} onChange={(e) => setName(e.target.value)} />
-        <button className="sm" onClick={() => guard(async () => {
-          await adminApi("PATCH", `/users/${u.id}`, { json: { display_name: name } });
-          toast("Name saved.");
-          await refreshAdmin();
-        })}>Save</button>
+        <button className="sm" disabled={name.trim() === (u.display_name ?? "")} onClick={() =>
+          confirmThen({
+            title: `Change ${u.email}'s display name?`,
+            message: name.trim() ? `It becomes "${name.trim()}".` : "It is cleared; their email shows instead.",
+            confirmLabel: "Save",
+          }, async () => {
+            await adminApi("PATCH", `/users/${u.id}`, { json: { display_name: name } });
+            toast("Name saved.");
+            await refreshAdmin();
+          })}>Save</button>
       </div>
 
       <h3>Access</h3>
       <div className="actions" style={{ marginTop: 0 }}>
-        <button className="sm" disabled={self} title={selfTitle} onClick={() => {
-          const msg = u.is_superuser
-            ? `Remove admin from ${u.email}?\n\nThey lose this page, and other users' folders disappear from their folder tree and answers.`
-            : `Make ${u.email} a system admin?\n\nThey get this page, and every non-admin user's folders appear — read-only — in their folder tree and answers. They are removed from every user group.`;
-          if (confirm(msg)) {
-            guard(async () => {
-              await adminApi("PATCH", `/users/${u.id}`, { json: { is_superuser: !u.is_superuser } });
-              await refreshAdmin();
-            });
-          }
-        }}>{u.is_superuser ? "Remove admin" : "Make admin"}</button>
-        <button className="sm" disabled={self} title={selfTitle} onClick={() => guard(async () => {
-          await adminApi("PATCH", `/users/${u.id}`, { json: { is_active: !u.is_active } });
-          await refreshAdmin();
-        })}>{u.is_active ? "Deactivate" : "Activate"}</button>
+        <button className="sm" disabled={self} title={selfTitle} onClick={() =>
+          confirmThen(u.is_superuser ? {
+            title: `Remove admin from ${u.email}?`,
+            message: "They lose this page, and other users' folders disappear from their folder tree and answers.",
+            confirmLabel: "Remove admin", danger: true,
+          } : {
+            title: `Make ${u.email} a system admin?`,
+            message: "They get this page, and every non-admin user's folders appear — read-only — in their folder tree and answers. They are removed from every user group.",
+            confirmLabel: "Make admin",
+          }, async () => {
+            await adminApi("PATCH", `/users/${u.id}`, { json: { is_superuser: !u.is_superuser } });
+            toast(u.is_superuser ? `${u.email} is no longer an admin.` : `${u.email} is now an admin.`);
+            await refreshAdmin();
+          })}>{u.is_superuser ? "Remove admin" : "Make admin"}</button>
+        <button className="sm" disabled={self} title={selfTitle} onClick={() =>
+          confirmThen(u.is_active ? {
+            title: `Deactivate ${u.email}?`,
+            message: "They are signed out on their next request and can't sign in until reactivated. Nothing of theirs is deleted.",
+            confirmLabel: "Deactivate", danger: true,
+          } : {
+            title: `Activate ${u.email}?`,
+            message: "They can sign in again.",
+            confirmLabel: "Activate",
+          }, async () => {
+            await adminApi("PATCH", `/users/${u.id}`, { json: { is_active: !u.is_active } });
+            toast(u.is_active ? `Deactivated ${u.email}.` : `Activated ${u.email}.`);
+            await refreshAdmin();
+          })}>{u.is_active ? "Deactivate" : "Activate"}</button>
       </div>
       <div className="note">
         {u.is_superuser
@@ -232,7 +271,11 @@ function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
           value={pw} onChange={(e) => setPw(e.target.value)} />
         <button className="sm" onClick={() => {
           if (pw.length < 8) { toast("Passwords need at least 8 characters.", "warn"); return; }
-          guard(async () => {
+          void confirmThen({
+            title: `Reset ${u.email}'s password?`,
+            message: "Their old password stops working. They are told in their activity log, but not the new password — hand it to them yourself.",
+            confirmLabel: "Reset password", danger: true,
+          }, async () => {
             await adminApi("POST", `/users/${u.id}/password`, { json: { password: pw } });
             setPw("");
             toast(`Password updated for ${u.email}. Browsers already signed in stay signed in ` +
@@ -251,16 +294,17 @@ function UserDetail({ u, onClose }: { u: AdminUser; onClose: () => void }) {
       <div className="dangerzone">
         <div className="sub">Deletes the account and everything it owns: spaces, folders, documents and chats.</div>
         <button className="sm danger" style={{ marginTop: 8 }} disabled={self}
-          title={self ? "You can't delete your own account." : undefined} onClick={() => {
-            if (confirm(`Delete user ${u.email} and ALL their data (spaces, folders, documents, chats)?\n\nThis cannot be undone.`)) {
-              guard(async () => {
-                await adminApi("DELETE", `/users/${u.id}`);
-                toast(`Deleted ${u.email}.`);
-                onClose();
-                await refreshAdmin();
-              });
-            }
-          }}>Delete user</button>
+          title={self ? "You can't delete your own account." : undefined} onClick={() =>
+            confirmThen({
+              title: `Delete user ${u.email}?`,
+              message: "ALL their data goes with them: spaces, folders, documents and chats. This can't be undone.",
+              confirmLabel: "Delete user", danger: true,
+            }, async () => {
+              await adminApi("DELETE", `/users/${u.id}`);
+              toast(`Deleted ${u.email}.`);
+              onClose();
+              await refreshAdmin();
+            })}>Delete user</button>
       </div>
     </aside>
   );

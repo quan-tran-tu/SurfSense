@@ -1,9 +1,17 @@
 /** Wire shapes of the backend routes this client calls. */
 
-export interface Share {
-  path: string;
+/** A share ends when revoked or when its expiry passes; both are final. */
+export type ShareState = "live" | "revoked" | "expired";
+
+/** GET /search-spaces/{id}/folder-shares — the tokens you minted and haven't revoked. */
+export interface FolderShare {
+  id: number;
   token: string;
-  expiresAt?: string | null;   // ISO; null/absent = never (shares minted before expiry existed)
+  source_folder_id: number;
+  folder_name: string | null;
+  created_at: string;
+  expires_at: string | null;
+  state: ShareState;
 }
 
 export interface Template {
@@ -23,6 +31,7 @@ export interface FolderNode {
   name: string;
   parent_id: number | null;
   owner_thread_id: number | null;
+  promoted_from_thread_id: number | null;   // set on a root ⤴ promoted out of that session
   origin: FolderOrigin;
   owner_email: string | null;
   group_name: string | null;
@@ -44,6 +53,7 @@ export interface FolderLink {
   source_folder_id: number;
   folder_name: string;
   live: boolean;
+  state: ShareState;
 }
 
 export interface WatchedFolder { id: number; name: string; owner_thread_id: number | null }
@@ -86,6 +96,7 @@ export interface AdminFolder {
   name: string;
   parent_id: number | null;
   owner_thread_id: number | null;
+  promoted_from_thread_id: number | null;
 }
 
 export interface AdminGroup {
@@ -121,6 +132,7 @@ export interface AdminShare {
   uses_count: number;
   link_count: number;
   revoked_at: string | null;
+  state: ShareState;
 }
 
 export interface AdminLink {
@@ -130,4 +142,28 @@ export interface AdminLink {
   source_folder_name: string | null;
   target_search_space_id: number;
   target_owner_email: string | null;
+}
+
+/** An account_event notification: something that changed for you while away. */
+export interface AccountEvent {
+  id: number;
+  title: string;
+  message: string;
+  read: boolean;
+  created_at: string;
+  metadata: { kind?: string };
+}
+
+/** Days per folder kind; null keeps that kind forever. */
+export interface RetentionDays {
+  session: number | null;
+  group: number | null;
+  admin: number | null;
+  space: number | null;
+}
+
+export interface RetentionSettings {
+  effective: RetentionDays;
+  deployment: RetentionDays;
+  overridden: boolean;
 }

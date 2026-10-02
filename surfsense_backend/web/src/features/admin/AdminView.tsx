@@ -11,6 +11,7 @@ import { setState } from "../../store";
 import { guard } from "../../ui/toast";
 import { refreshAdmin } from "./common";
 import { GroupsTab } from "./GroupsTab";
+import { SettingsTab } from "./SettingsTab";
 import { SharesTab } from "./SharesTabs";
 import { UsersTab } from "./UsersTab";
 
@@ -18,6 +19,7 @@ const TABS = [
   { id: "users", label: "Users" },
   { id: "groups", label: "User groups" },
   { id: "shares", label: "Folder shares" },
+  { id: "settings", label: "Settings" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -70,6 +72,7 @@ export function AdminView() {
         {tab === "users" && <UsersTab selected={selectedUser} setSelected={setSelectedUser} />}
         {tab === "groups" && <GroupsTab />}
         {tab === "shares" && <SharesTab />}
+        {tab === "settings" && <SettingsTab />}
       </div>
     </div>
   );

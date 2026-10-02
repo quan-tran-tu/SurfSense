@@ -1,7 +1,7 @@
 /*
  * Report templates are exemplar reports the user uploads; /report t<id> makes
  * the report follow their structure and style. They are per-user browser state
- * (like shares): the backend has no template storage, and the format reaches the
+ * (like session notes): the backend has no template storage, and the format reaches the
  * model inside the report instructions.
  *
  * .docx is the preferred format — real Vietnamese reports live in Word — and the

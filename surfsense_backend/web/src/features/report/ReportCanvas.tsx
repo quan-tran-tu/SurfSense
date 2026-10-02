@@ -11,6 +11,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { apiJson } from "../../api/client";
 import { Markdown } from "../../lib/Markdown";
 import { queryClient } from "../../queryClient";
+import { confirmAction } from "../../ui/confirm";
 import { guard, toast } from "../../ui/toast";
 import { downloadReport } from "../chat/reports";
 import { reportHref } from "./route";
@@ -99,9 +100,13 @@ export function ReportCanvas({ id }: { id: number }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [save]);
 
-  const switchVersion = (to: number) => {
+  const switchVersion = async (to: number) => {
     if (to === id) return;
-    if (dirty && !confirm("Bản này có thay đổi chưa lưu. Bỏ các thay đổi và chuyển phiên bản?")) return;
+    if (dirty && !await confirmAction({
+      title: "Bỏ các thay đổi chưa lưu?",
+      message: "Bản này có thay đổi chưa lưu. Chuyển phiên bản sẽ bỏ các thay đổi đó.",
+      confirmLabel: "Bỏ và chuyển", danger: true,
+    })) return;
     setDraft(null);
     location.hash = reportHref(to);
   };
@@ -110,7 +115,11 @@ export function ReportCanvas({ id }: { id: number }) {
     setExportOpen(false);
     // Export renders the server's copy, so it must hold what is on screen.
     if (dirty) {
-      if (!confirm("Export dùng bản đã lưu trên server. Lưu các thay đổi rồi export?")) return;
+      if (!await confirmAction({
+        title: "Lưu rồi export?",
+        message: "Export dùng bản đã lưu trên server. Lưu các thay đổi rồi export?",
+        confirmLabel: "Lưu và export",
+      })) return;
       if (!(await save())) return;
     }
     await downloadReport(id, fmt);

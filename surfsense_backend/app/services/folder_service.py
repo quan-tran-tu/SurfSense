@@ -330,4 +330,13 @@ async def dispatch_folder_deletion(session: AsyncSession, folder_id: int) -> int
             detail="Could not queue folder deletion. Documents have been restored.",
         ) from err
 
+    # Whoever reads this folder through a share or a group loses it silently
+    # otherwise; their log says why it vanished.
+    from app.services.account_events import notify_readers_of_deleted_folder
+
+    folder = await session.get(Folder, folder_id)
+    if folder is not None:
+        await notify_readers_of_deleted_folder(session, list(subtree_ids), folder.name)
+        await session.commit()
+
     return len(document_ids)

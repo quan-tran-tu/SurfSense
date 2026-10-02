@@ -3,7 +3,7 @@ import {
   DEFAULT_BACKEND, DEFAULT_MODEL, DEFAULT_MODEL_BASE,
   HAS_BACKEND, INJECTED_BACKEND, INJECTED_BASE, INJECTED_KEY, INJECTED_MODEL,
 } from "./config";
-import type { Share, Template } from "./api/types";
+import type { Template } from "./api/types";
 
 /* ---------------------------------------------------------------- messages */
 
@@ -48,7 +48,6 @@ export interface State {
   adminOpen: boolean;
 
   // Per-user, persisted under byUser[email] (see savePrefs).
-  shares: Share[];             // the backend has no "my shares" list endpoint, so we remember
   templates: Template[];       // report format exemplars, browser-only
   // Folder ids every question and report is confined to; [] = the whole space.
   // Sent as mentioned_folder_ids (/new_chat) and folder_ids (/reports/generate),
@@ -75,7 +74,7 @@ export const useStore = create<State>(() => ({
   signedIn: false, boot: "ready", authNotice: "",
   spaceId: null, threadId: null, threadTitle: "",
   lastReportId: null, isAdmin: false, busy: false, adminOpen: false,
-  shares: [], templates: [], scopeFolderIds: [], scopeNames: {}, sessionNotes: {},
+  templates: [], scopeFolderIds: [], scopeNames: {}, sessionNotes: {},
   unreachableScopeIds: [], messages: [], source: null,
 }));
 
@@ -84,13 +83,13 @@ export const setState = useStore.setState;
 
 /* ------------------------------------------------------------------- prefs */
 //
-// The same localStorage key and layout the single-file client used, so shares,
-// templates and session notes survive the move to this build.
+// The same localStorage key and layout the single-file client used, so templates
+// and session notes survive the move to this build. Share tokens are no longer
+// kept here: the server lists them (GET /search-spaces/{id}/folder-shares).
 
 const LS = "surfsense.mini";
 
 interface UserPrefs {
-  shares?: Share[];
   threadId?: number | null;
   threadTitle?: string;
   templates?: Template[];
@@ -107,7 +106,6 @@ interface Prefs {
   modelBase?: string;
   byUser?: Record<string, UserPrefs>;
   // pre-byUser layout
-  shares?: Share[];
   threadId?: number | null;
   threadTitle?: string;
 }
@@ -128,7 +126,6 @@ export function savePrefs() {
   const byUser = prefs.byUser ?? {};
   if (s.email) {
     byUser[s.email] = {
-      shares: s.shares,
       threadId: s.threadId,
       threadTitle: s.threadTitle,
       templates: s.templates,
@@ -154,7 +151,6 @@ export function savePrefs() {
 export function adoptUser(email: string) {
   const mine = readPrefs().byUser?.[email] ?? {};
   setState({
-    shares: mine.shares ?? [],
     threadId: mine.threadId ?? null,
     threadTitle: mine.threadTitle ?? "",
     templates: mine.templates ?? [],
@@ -166,7 +162,7 @@ export function adoptUser(email: string) {
 
 export function loadPrefs() {
   const prefs = readPrefs();
-  const { byUser, shares, threadId, threadTitle, ...shared } = prefs;
+  const { byUser, threadId, threadTitle, ...shared } = prefs;
   setState({
     email: shared.email ?? "",
     apiKey: shared.apiKey ?? "",
@@ -177,8 +173,8 @@ export function loadPrefs() {
 
   // Migrate the pre-byUser layout, where these sat at the top level and leaked
   // across accounts. Attribute them to the user who was last signed in.
-  if (!byUser && prefs.email && (shares || threadId)) {
-    setState({ shares: shares ?? [], threadId: threadId ?? null, threadTitle: threadTitle ?? "" });
+  if (!byUser && prefs.email && threadId) {
+    setState({ threadId: threadId ?? null, threadTitle: threadTitle ?? "" });
     savePrefs();
   }
 
