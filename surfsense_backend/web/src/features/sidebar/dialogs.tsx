@@ -40,7 +40,6 @@ const EXPIRY = [
   { label: "7 days", days: 7 },
   { label: "30 days", days: 30 },
   { label: "90 days", days: 90 },
-  { label: "Never", days: 0 },
 ];
 
 export const expiryText = (s: Pick<FolderShare, "expires_at" | "state">) =>
@@ -62,9 +61,9 @@ export function TokenLine({ s }: { s: FolderShare }) {
 }
 
 /**
- * Share a folder. A folder that already has a working token shows it, so the
- * same folder doesn't collect a new token every time someone asks for it; a new
- * one is still a click away (e.g. with a different expiry).
+ * Share a folder. A folder has one working token at a time: once it has one,
+ * the dialog shows it instead of offering another. A new one is minted only
+ * after that one is revoked or expires.
  */
 export function ShareDialog({ folderId, path, onClose }: { folderId: number; path: string; onClose: () => void }) {
   const spaceId = useStore((s) => s.spaceId);
@@ -73,8 +72,7 @@ export function ShareDialog({ folderId, path, onClose }: { folderId: number; pat
   const [days, setDays] = useState(7);
   const [minted, setMinted] = useState<string | null>(null);
   const share = () => guard(async () => {
-    const expiresAt = days ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
-    setMinted(await shareFolder(path, expiresAt));
+    setMinted(await shareFolder(path, new Date(Date.now() + days * 86_400_000).toISOString()));
   });
   return (
     <Dialog title={`Share "${path}"`} onClose={onClose}>
@@ -89,14 +87,14 @@ export function ShareDialog({ folderId, path, onClose }: { folderId: number; pat
       {minted && !live.some((s) => s.token === minted) && (
         <div className="token mono">{minted}</div>
       )}
-      <label htmlFor="shareExpiry">{live.length ? "Or create another token, expiring after" : "Expires after"}</label>
-      <select id="shareExpiry" value={days} onChange={(e) => setDays(Number(e.target.value))}>
-        {EXPIRY.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
-      </select>
+      {!live.length && !minted && <>
+        <label htmlFor="shareExpiry">Expires after</label>
+        <select id="shareExpiry" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          {EXPIRY.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
+        </select>
+      </>}
       <div className="actions">
-        <button className={`sm${live.length ? "" : " primary"}`} onClick={share}>
-          {live.length ? "Create another token" : "Create token"}
-        </button>
+        {!live.length && !minted && <button className="sm primary" onClick={share}>Create token</button>}
         <button className="sm" onClick={onClose}>Close</button>
       </div>
     </Dialog>

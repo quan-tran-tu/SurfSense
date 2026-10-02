@@ -9,7 +9,7 @@
  * (hard-revoke) or change how long a token lasts.
  *
  * A token is live until revoked or expired, and both are final: the expiry of a
- * live token can be moved or cleared, never set in the past and never on an
+ * live token can be moved, never cleared, never set in the past and never on an
  * ended token. Ending one now is a revoke.
  */
 import { useQuery } from "@tanstack/react-query";
@@ -111,13 +111,13 @@ const toLocalInput = (iso: string | null) => {
 
 function Expiry({ share }: { share: AdminShare }) {
   const [value, setValue] = useState(toLocalInput(share.expires_at));
-  const save = (expiresAt: string | null) => confirmThen({
-    title: expiresAt ? `Expire token #${share.id} on ${when(expiresAt)}?` : `Make token #${share.id} never expire?`,
-    message: expiresAt ? "Importers keep reading it until then." : "It stays live until it is revoked.",
+  const save = (expiresAt: string) => confirmThen({
+    title: `Expire token #${share.id} on ${when(expiresAt)}?`,
+    message: "Importers keep reading it until then.",
     confirmLabel: "Save",
   }, async () => {
     await adminApi("PATCH", `/folder-shares/${share.id}`, { json: { expires_at: expiresAt } });
-    toast(expiresAt ? `Token now expires ${when(expiresAt)}.` : "Token no longer expires.");
+    toast(`Token now expires ${when(expiresAt)}.`);
     await refreshAdmin();
   });
   // Ended is final: say how, and offer nothing that would pretend otherwise.
@@ -132,7 +132,6 @@ function Expiry({ share }: { share: AdminShare }) {
         onChange={(e) => setValue(e.target.value)} />
       <button className="sm" disabled={!future} title={value && !future ? "Pick a time in the future — to end it now, revoke it." : undefined}
         onClick={() => save(new Date(value).toISOString())}>Set</button>
-      {share.expires_at && <button className="sm" onClick={() => save(null)}>Never expire</button>}
     </div>
   );
 }

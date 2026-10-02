@@ -224,11 +224,11 @@ export async function demoteFolder(f: FolderNode) {
   await refreshFolders();
 }
 
-/** Mint a share token for a space-wide folder; `expiresAt` null means it never expires. */
-export async function shareFolder(path: string, expiresAt: string | null) {
+/** Mint a share token for a space-wide folder, live until `expiresAt`. */
+export async function shareFolder(path: string, expiresAt: string) {
   const { token } = await apiJson<{ token: string }>(
     "POST", `/api/v1/search-spaces/${getState().spaceId}/folder-shares`,
-    { json: { path, expires_at: expiresAt ?? undefined } });
+    { json: { path, expires_at: expiresAt } });
   await refreshFolders();
   return token;
 }
